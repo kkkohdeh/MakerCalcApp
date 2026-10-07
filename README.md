@@ -12,6 +12,10 @@ Puedes usar la app por separado o conectarla al dashboard de [MakerCalc](https:/
 
 Consulta la sección **Releases** para los instaladores y las notas de cada versión. Revisa el estado de la versión, sus requisitos y sus limitaciones antes de instalarla.
 
+[Descargar 0.0.1-alpha para Windows](https://github.com/kkkohdeh/MakerCalcApp/releases/download/v0.0.1-alpha/MakerCalc-Setup.exe).
+
+En Ajustes, **Buscar actualizaciones** consulta las versiones publicadas y permite abrir el release de una versión nueva. Descarga y ejecuta su instalador; conserva tus impresoras, clave e historial. La app no descarga ni instala actualizaciones automáticamente.
+
 ## Uso local
 
 La app necesita acceso a las impresoras en la red local. Su capacidad depende del PC y de la red; los planes y límites del dashboard web son independientes.
