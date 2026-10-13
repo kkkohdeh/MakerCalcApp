@@ -1,3 +1,7 @@
 *
 !/README.md
 !/.gitignore
+!/docs/
+!/docs/assets/
+!/docs/assets/makercalc_wordmark_white.svg
+!/docs/assets/makercalc_wordmark_black.svg

@@ -1,8 +1,32 @@
-# MakerCalc para Windows
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/makercalc_wordmark_white.svg">
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/makercalc_wordmark_black.svg">
+    <img src="docs/assets/makercalc_wordmark_black.svg" alt="MakerCalc" width="300">
+  </picture>
+</p>
 
-Aplicación de escritorio para consultar la actividad y el historial de impresoras 3D en la red local.
+<p align="center">
+  <strong>Tus impresoras 3D, conectadas en un solo lugar.</strong><br>
+  Aplicación de escritorio para Windows que lee impresoras en la red local,<br>
+  unifica sus datos y los muestra en una interfaz nativa escrita en Rust.<br>
+  Integraciones actuales: Klipper/Moonraker y FlashForge.
+</p>
 
-Repositorio de distribución de la app. El código fuente no forma parte de este repositorio.
+<p align="center">
+  <img src="https://img.shields.io/badge/Rust-100%25-b7410e?style=flat-square&amp;logo=rust&amp;logoColor=white" alt="100% Rust">
+  <img src="https://img.shields.io/badge/Windows-10%20%2F%2011-2563eb?style=flat-square" alt="Windows 10 y 11">
+  <img src="https://img.shields.io/badge/estado-alpha-d97706?style=flat-square" alt="Estado alpha">
+</p>
+
+<p align="center">
+  <a href="https://github.com/kkkohdeh/MakerCalc-Cloud#un-idioma-para-las-impresoras">Cómo funciona</a> ·
+  <a href="https://github.com/kkkohdeh/MakerCalc-Cloud#ejecutar-verificaciones-en-windows">Verificaciones</a> ·
+  <a href="https://github.com/kkkohdeh/MakerCalc-Cloud/blob/main/arquitectura.md">Arquitectura</a> ·
+  <a href="https://github.com/kkkohdeh/MakerCalc-Cloud/blob/main/LenguajeNormalizado26-09-26.md">Contrato de telemetría</a>
+</p>
+
+---
 
 ## App y dashboard
 
