@@ -16,7 +16,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/Rust-100%25-b7410e?style=flat-square&amp;logo=rust&amp;logoColor=white" alt="100% Rust">
   <img src="https://img.shields.io/badge/Windows-10%20%2F%2011-2563eb?style=flat-square" alt="Windows 10 y 11">
-  <img src="https://img.shields.io/badge/estado-alpha-d97706?style=flat-square" alt="Estado alpha">
+  <img src="https://img.shields.io/badge/estado-beta-d97706?style=flat-square" alt="Estado beta">
 </p>
 
 <p align="center">
@@ -36,7 +36,7 @@ Puedes usar la app por separado o conectarla al dashboard de [MakerCalc](https:/
 
 Consulta la sección **Releases** para los instaladores y las notas de cada versión. Revisa el estado de la versión, sus requisitos y sus limitaciones antes de instalarla.
 
-[Descargar 0.0.2-alpha para Windows](https://github.com/kkkohdeh/MakerCalcApp/releases/download/v0.0.2-alpha/MakerCalc-Setup.exe).
+[Descargar 0.0.3-beta para Windows](https://github.com/kkkohdeh/MakerCalcApp/releases/download/v0.0.3-beta/MakerCalc-Setup.exe).
 
 En Ajustes, **Buscar actualizaciones** consulta las versiones publicadas y permite abrir el release de una versión nueva. Descarga y ejecuta su instalador; conserva tus impresoras, clave e historial. La app no descarga ni instala actualizaciones automáticamente.
 
