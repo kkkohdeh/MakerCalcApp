@@ -36,7 +36,7 @@ Puedes usar la app por separado o conectarla al dashboard de [MakerCalc](https:/
 
 Consulta la sección **Releases** para los instaladores y las notas de cada versión. Revisa el estado de la versión, sus requisitos y sus limitaciones antes de instalarla.
 
-[Descargar 0.0.3-beta para Windows](https://github.com/kkkohdeh/MakerCalcApp/releases/download/v0.0.3-beta/MakerCalc-Setup.exe).
+[Descargar 0.0.4-beta para Windows](https://github.com/kkkohdeh/MakerCalcApp/releases/download/v0.0.4-beta/MakerCalc-Setup.exe).
 
 En Ajustes, **Buscar actualizaciones** consulta las versiones publicadas y permite abrir el release de una versión nueva. Descarga y ejecuta su instalador; conserva tus impresoras, clave e historial. La app no descarga ni instala actualizaciones automáticamente.
 
