@@ -116,6 +116,7 @@ pub(super) struct Projection {
     auto_shutdown_minutes: Option<u64>,
     independent_action: Option<u32>,
     station_action: Option<u32>,
+    station_step: Option<u32>,
     dispatched_at: Option<Instant>,
     station_operation: Option<(u32, K)>,
     current_slot: Option<u32>,
@@ -295,6 +296,7 @@ impl Projection {
             .filter(|_| poll.observation.material_station_available == Some(false));
         self.independent_action = independent.and_then(|s| s.state_action);
         self.station_action = station.and_then(|s| s.state_action);
+        self.station_step = station.and_then(|s| s.state_step);
         self.current_slot = station.and_then(|s| s.current_slot);
         let station_operation = self.observe_station_operation(station);
         let known = matches!(self.product, Some(35 | 36 | 38 | 40 | 41));

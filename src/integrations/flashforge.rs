@@ -1546,6 +1546,7 @@ async fn run_detail_handler(
                 if matches!(command.action, crate::shared::control::MachineAction::CancelFilamentOperation { .. }) {
                     machine.abort_load(ControlResult::Unknown);
                 }
+                let dispatch_started = Instant::now();
                 let result = match validation {
                     Err(error) => ControlResult::Rejected(error),
                     Ok(payload) => {
@@ -1590,7 +1591,7 @@ async fn run_detail_handler(
                     }
                 };
                 if let (Some(source), crate::shared::control::MachineAction::LoadFilament { supply_id }, ControlResult::Accepted) = (source, &command.action, result) {
-                    machine.defer_load(source, *supply_id, command.connection_epoch, command.reply);
+                    machine.defer_load(source, *supply_id, command.connection_epoch, dispatch_started, command.reply);
                 } else {
                     let _ = command.reply.send(result);
                 }

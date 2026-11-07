@@ -7,6 +7,7 @@ pub(super) struct PendingLoad {
     epoch: u64,
     started: Instant,
     saw_unloading: bool,
+    saw_nonterminal_step: bool,
     reply: oneshot::Sender<ControlResult>,
 }
 
@@ -27,14 +28,16 @@ impl Projection {
         source: ResourceId,
         target: ResourceId,
         epoch: u64,
+        started: Instant,
         reply: oneshot::Sender<ControlResult>,
     ) {
         self.pending_load = Some(PendingLoad {
             source,
             target,
             epoch,
-            started: Instant::now(),
+            started,
             saw_unloading: false,
+            saw_nonterminal_step: matches!(self.station_step, Some(0 | 4 | 5)),
             reply,
         });
     }
@@ -65,7 +68,7 @@ impl Projection {
         }
     }
 
-    /// Continue only after this request's unload was observed running and completed.
+    /// Continue only with fresh evidence that the requested unload finished.
     pub(in crate::integrations::flashforge) fn next_load(
         &mut self,
         state: &PrinterState,
@@ -99,6 +102,10 @@ impl Projection {
             self.refresh_supply_controls(detail);
             return None;
         }
+        if self.observed_at.is_none_or(|at| at <= load.started) {
+            self.pending_load = Some(load);
+            return None;
+        }
         let operation = source.and_then(|s| s.operation);
         if let Some(operation) = operation {
             if operation.action != K::UnloadFilament
@@ -110,10 +117,27 @@ impl Projection {
             }
             load.saw_unloading |= operation.phase == SupplyOperationPhase::Running;
         }
-        if !load.saw_unloading
-            || !operation.is_some_and(|op| op.phase == SupplyOperationPhase::Completed)
-        {
-            self.pending_load = Some(load);
+        let station_idle = self.station_action == Some(0)
+            && matches!(self.status.as_deref(), Some("ready" | "idle"));
+        load.saw_nonterminal_step |= matches!(self.station_step, Some(0 | 4 | 5));
+        let unload_completed = load.saw_unloading
+            && operation.is_some_and(|op| op.phase == SupplyOperationPhase::Completed);
+        // A new completion with no selected slot can arrive between running samples.
+        let completed_between_polls = station_idle
+            && load.saw_nonterminal_step
+            && self.current_slot == Some(0)
+            && self.station_step == Some(6)
+            && self.station_operation.is_none();
+        if !unload_completed && !completed_between_polls {
+            if station_idle
+                && self.station_step == Some(0)
+                && (load.saw_unloading || self.current_slot == Some(0))
+            {
+                let _ = load.reply.send(ControlResult::Unknown);
+                self.refresh_supply_controls(detail);
+            } else {
+                self.pending_load = Some(load);
+            }
             return None;
         }
         self.refresh_supply_controls(detail);
