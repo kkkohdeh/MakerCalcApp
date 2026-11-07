@@ -159,15 +159,6 @@ fn main() {
             .set_description(t!("common.startup.failed", error = error).into_owned())
             .set_level(rfd::MessageLevel::Error)
             .show();
-    } else {
-        crate::diagnostics::log(
-            crate::diagnostics::LogEvent::new(
-                crate::diagnostics::LogLevel::Info,
-                crate::diagnostics::LogArea::App,
-                "app.stopped",
-            )
-            .result("ok"),
-        );
     }
     if let Some(logger) = logger.borrow_mut().take() {
         logger.shutdown();
