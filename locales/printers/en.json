@@ -627,7 +627,7 @@
       "value": "Requested value",
       "send": "Send request",
       "auto_shutdown_on": "Enable auto shutdown (delay in seconds)",
-      "auto_shutdown_off": "Disable auto shutdown (delay in seconds)"
+      "auto_shutdown_off": "Disable auto shutdown"
     },
     "motion": {
       "title": "Movement",

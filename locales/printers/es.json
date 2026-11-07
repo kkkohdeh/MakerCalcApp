@@ -627,7 +627,7 @@
       "value": "Valor solicitado",
       "send": "Enviar solicitud",
       "auto_shutdown_on": "Activar apagado automático (demora en segundos)",
-      "auto_shutdown_off": "Desactivar apagado automático (demora en segundos)"
+      "auto_shutdown_off": "Desactivar apagado automático"
     },
     "motion": {
       "title": "Movimiento",

@@ -30,6 +30,7 @@ pub(super) struct Detail {
     mac_addr: Option<String>,
     z_axis_compensation: Option<f64>,
     auto_shutdown: Option<String>,
+    auto_shutdown_time: Option<serde_json::Value>,
     camera_stream_url: Option<String>,
     chamber_fan_speed: Option<f64>,
     cooling_fan_left_speed: Option<f64>,
@@ -112,6 +113,7 @@ pub(super) struct Projection {
     product: Option<u32>,
     observed_at: Option<Instant>,
     status: Option<String>,
+    auto_shutdown_minutes: Option<u64>,
     independent_action: Option<u32>,
     station_action: Option<u32>,
     dispatched_at: Option<Instant>,
@@ -274,6 +276,11 @@ impl Projection {
         let extra = &detail.machine;
         self.product = product(extra);
         self.status = detail.status.clone();
+        self.auto_shutdown_minutes = extra
+            .auto_shutdown_time
+            .as_ref()
+            .and_then(serde_json::Value::as_u64)
+            .filter(|minutes| (1..=1440).contains(minutes));
         self.printing = matches!(
             poll.observation.status,
             Some(PrintStatus::Printing | PrintStatus::Paused)
@@ -1070,12 +1077,18 @@ impl Projection {
                 json!({"levelingDetection":open(*kind == CalibrationKind::BedLeveling),"vibrationCompensation":open(*kind == CalibrationKind::VibrationCompensation)}),
             ),
             MachineAction::SetAutoShutdown { enabled, delay_s } => {
-                if !delay_s.is_multiple_of(60) {
-                    return Err(ControlError::InvalidData);
-                }
+                let minutes = if *enabled {
+                    if !delay_s.is_multiple_of(60) {
+                        return Err(ControlError::InvalidData);
+                    }
+                    u64::from(delay_s / 60)
+                } else {
+                    // Keep the reported delay in the firmware's two-field command.
+                    self.auto_shutdown_minutes.unwrap_or(30)
+                };
                 (
                     "delayClose_cmd",
-                    json!({"automaticShutdown":open(*enabled),"shutdownAfterTime":delay_s / 60}),
+                    json!({"automaticShutdown":open(*enabled),"shutdownAfterTime":minutes}),
                 )
             }
             MachineAction::SetDeviceName { name } => ("reName_cmd", json!({"name":name})),

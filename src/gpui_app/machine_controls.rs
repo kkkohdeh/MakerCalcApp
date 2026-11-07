@@ -98,15 +98,16 @@ fn choices(printer: &PrinterEntry) -> Vec<Choice> {
         Control::ClearPlate,
         None,
     );
+    let disable_auto_shutdown = machine.auto_shutdown_enabled == Some(true);
     add(
-        if machine.auto_shutdown_enabled == Some(true) {
+        if disable_auto_shutdown {
             "auto_shutdown_off"
         } else {
             "auto_shutdown_on"
         },
         K::SetAutoShutdown,
-        Control::AutoShutdown(!machine.auto_shutdown_enabled.unwrap_or(false)),
-        Some("1800".into()),
+        Control::AutoShutdown(!disable_auto_shutdown),
+        (!disable_auto_shutdown).then(|| "1800".into()),
     );
     add(
         "name",
@@ -294,10 +295,14 @@ fn action(
         Control::ClearPlate => MachineAction::ConfirmBuildPlateCleared,
         Control::AutoShutdown(enabled) => MachineAction::SetAutoShutdown {
             enabled,
-            delay_s: value
-                .trim()
-                .parse()
-                .map_err(|_| ControlError::InvalidData)?,
+            delay_s: if enabled {
+                value
+                    .trim()
+                    .parse()
+                    .map_err(|_| ControlError::InvalidData)?
+            } else {
+                0
+            },
         },
         Control::Name => MachineAction::SetDeviceName {
             name: value.trim().into(),

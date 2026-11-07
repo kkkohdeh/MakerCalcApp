@@ -264,7 +264,9 @@ impl MachineAction {
             Self::SetZOffset { offset_mm } => offset_mm.is_finite() && offset_mm.abs() <= 10.0,
             Self::SetFanPower { percent, .. } => *percent <= 100,
             Self::SetLightBrightness { percent, .. } => *percent <= 100,
-            Self::SetAutoShutdown { delay_s, .. } => (60..=86400).contains(delay_s),
+            Self::SetAutoShutdown { enabled, delay_s } => {
+                !enabled || (60..=86400).contains(delay_s)
+            }
             Self::SetDeviceName { name } | Self::SetDeviceProfileName { name } => {
                 valid_label(name, 64)
             }
