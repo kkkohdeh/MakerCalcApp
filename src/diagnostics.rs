@@ -258,7 +258,7 @@ pub(crate) fn write_crash(detail: &str) {
         utc_timestamp(unix_millis()),
         escape(&clean_detail(detail))
     );
-    let _ = fs::write(path, line);
+    let _ = append_rotating(&path, &line, MAX_LOG_BYTES);
 }
 
 fn default_log_directory() -> io::Result<PathBuf> {
