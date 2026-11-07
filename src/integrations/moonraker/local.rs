@@ -187,11 +187,13 @@ pub(crate) fn build_control_request(
     Ok(request)
 }
 
-pub(crate) fn validate_upload(source: &Path, destination: &str) -> Result<u64, ControlError> {
+pub(super) async fn validate_upload(source: &Path, destination: &str) -> Result<u64, ControlError> {
     if !valid_gcode_filename(destination) {
         return Err(ControlError::Upload);
     }
-    let metadata = std::fs::metadata(source).map_err(|_| ControlError::Upload)?;
+    let metadata = tokio::fs::metadata(source)
+        .await
+        .map_err(|_| ControlError::Upload)?;
     if !metadata.is_file() || metadata.len() == 0 || metadata.len() > 256 * 1024 * 1024 {
         return Err(ControlError::Upload);
     }

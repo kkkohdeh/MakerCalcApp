@@ -1078,7 +1078,8 @@ async fn handle_printer_action(
         destination,
     } = action
     {
-        return start_upload(file_reader, operation_io, source, destination);
+        start_upload(file_reader, operation_io, source, destination);
+        return Ok(());
     }
     let request = match runtime_control_request(*next_id, &action, detail, state) {
         Ok(request) => request,
@@ -1133,21 +1134,11 @@ async fn handle_printer_action(
 
 fn start_upload(
     file_reader: &FileReader,
-    operation_io: &mut OperationIo,
+    operation_io: &OperationIo,
     source: std::path::PathBuf,
     destination: String,
-) -> Result<(), MoonrakerError> {
+) {
     let kind = crate::integrations::moonraker::local::PrinterActionKind::UploadGcode;
-    let length = match validate_upload(&source, &destination) {
-        Ok(length) => length,
-        Err(error) => {
-            let _ = operation_io.state.send_replace(OperationState::Rejected {
-                action: kind,
-                message: error.to_string(),
-            });
-            return Ok(());
-        }
-    };
     let _ = operation_io
         .state
         .send_replace(OperationState::Sending(kind));
@@ -1155,7 +1146,11 @@ fn start_upload(
     let base = file_reader.base.clone();
     let result_sender = operation_io.state.clone();
     tokio::spawn(async move {
-        let next_state = match upload_gcode(&client, &base, &source, &destination, length).await {
+        let result = match validate_upload(&source, &destination).await {
+            Ok(length) => upload_gcode(&client, &base, &source, &destination, length).await,
+            Err(error) => Err(error.to_string()),
+        };
+        let next_state = match result {
             Ok(()) => OperationState::Accepted(kind),
             Err(message) => OperationState::Rejected {
                 action: kind,
@@ -1164,7 +1159,6 @@ fn start_upload(
         };
         let _ = result_sender.send_replace(next_state);
     });
-    Ok(())
 }
 
 async fn upload_gcode(
@@ -1723,7 +1717,7 @@ async fn wait_for_detail_reply(
                     continue;
                 }
                 if let PrinterAction::UploadGcode { source, destination } = action {
-                    start_upload(file_reader, operation_io, source, destination)?;
+                    start_upload(file_reader, operation_io, source, destination);
                     continue;
                 }
                 let control_id = *next_id;
