@@ -1,7 +1,7 @@
 use super::components::button::Button;
 use crate::i18n::t;
 use gpui_kit::base::{StyledExt as _, TestSupportExt as _};
-use gpui_kit::component::{ActiveTheme as _, Sizable as _, TitleBar, h_flex};
+use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, TitleBar, h_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, Bounds, Context, Div, Hsla, InteractiveElement as _, IntoElement,
@@ -100,6 +100,9 @@ impl MakerCalcGpuiApp {
         } else {
             px(20.)
         };
+        let divider_color = cx.theme().border;
+        let divider = || div().flex_none().h(px(14.)).w(px(1.)).bg(divider_color);
+        let github_label = t!("common.actions.open_github_repository").into_owned();
         h_flex()
             .items_center()
             .w_full()
@@ -212,8 +215,29 @@ impl MakerCalcGpuiApp {
                                         ),
                                 )
                             })
-                            .child(self.render_history_toggle(cx))
-                            .child(Self::render_settings_button("settings", cx)),
+                            .child(
+                                h_flex()
+                                    .items_center()
+                                    .flex_none()
+                                    .gap_2()
+                                    .child(self.render_history_toggle(cx))
+                                    .child(divider())
+                                    .child(Self::render_settings_button("settings", cx))
+                                    .child(divider())
+                                    .child(
+                                        Button::new("open-github-repository")
+                                            .ghost()
+                                            .small()
+                                            .icon(Icon::default().path("icons/github.svg"))
+                                            .accessibility_label(github_label.clone())
+                                            .tooltip(github_label)
+                                            .on_click(|_, _, cx| {
+                                                cx.open_url(
+                                                    "https://github.com/kkkohdeh/MakerCalcApp",
+                                                );
+                                            }),
+                                    ),
+                            ),
                     )
                     .child(Self::render_window_controls()),
             )

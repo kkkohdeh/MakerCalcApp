@@ -61,7 +61,7 @@ impl MakerCalcGpuiApp {
         cx: &mut Context<Self>,
     ) -> Button {
         Button::new(id)
-            .outline()
+            .ghost()
             .small()
             .icon(Icon::default().data(SVG_SETTINGS))
             .label(t!("settings.title").into_owned())
