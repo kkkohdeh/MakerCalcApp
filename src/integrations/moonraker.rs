@@ -1183,7 +1183,8 @@ async fn upload_gcode(
     let endpoint = Url::parse(base)
         .and_then(|url| url.join("/server/files/upload"))
         .map_err(|_| "La dirección local de Moonraker no es válida".to_owned())?;
-    let response = timeout(UPLOAD_TIMEOUT, client.post(endpoint).multipart(form).send())
+    let deadline = tokio::time::Instant::now() + UPLOAD_TIMEOUT;
+    let response = timeout_at(deadline, client.post(endpoint).multipart(form).send())
         .await
         .map_err(|_| "La subida superó el tiempo permitido".to_owned())?
         .map_err(|_| "La subida a Moonraker no se pudo completar".to_owned())?;
@@ -1191,19 +1192,21 @@ async fn upload_gcode(
         return Ok(());
     }
     let status = response.status();
-    let mut message = String::new();
+    const MAX_ERROR_BYTES: usize = 512;
+    let mut message = Vec::new();
     let mut stream = response.bytes_stream();
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|_| "Moonraker cerró la respuesta de subida".to_owned())?;
-        let remaining = 512usize.saturating_sub(message.len());
-        if remaining == 0 {
+    while message.len() < MAX_ERROR_BYTES {
+        let Some(chunk) = timeout_at(deadline, stream.next())
+            .await
+            .map_err(|_| "La subida superó el tiempo permitido".to_owned())?
+        else {
             break;
-        }
-        message.push_str(&String::from_utf8_lossy(
-            &chunk[..chunk.len().min(remaining)],
-        ));
+        };
+        let chunk = chunk.map_err(|_| "Moonraker cerró la respuesta de subida".to_owned())?;
+        let remaining = MAX_ERROR_BYTES - message.len();
+        message.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
     }
-    let response_message = sanitize_message(&message, 512);
+    let response_message = sanitize_message(&String::from_utf8_lossy(&message), MAX_ERROR_BYTES);
     if response_message.is_empty() {
         Err(format!("Moonraker rechazó la subida ({status})"))
     } else {
