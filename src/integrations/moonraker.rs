@@ -259,11 +259,33 @@ struct DetailSession {
     cameras: BTreeSet<String>,
     camera_snapshots: BTreeMap<String, String>,
     pending_deltas: Vec<(Value, f64)>,
+    pending_control: Option<PendingControl>,
+}
+
+struct PendingControl {
+    id: u64,
+    kind: local::PrinterActionKind,
+    deadline: tokio::time::Instant,
+    state: watch::Sender<OperationState>,
+}
+
+async fn wait_for_control_timeout(control: Option<&PendingControl>) {
+    if let Some(control) = control {
+        tokio::time::sleep_until(control.deadline).await;
+    } else {
+        std::future::pending().await
+    }
 }
 
 struct FileReader {
     client: reqwest::Client,
     base: String,
+}
+
+impl Drop for DetailSession {
+    fn drop(&mut self) {
+        self.mark_control_unknown();
+    }
 }
 
 impl DetailSession {
@@ -282,8 +304,17 @@ impl DetailSession {
             cameras: BTreeSet::new(),
             camera_snapshots: BTreeMap::new(),
             pending_deltas: Vec::new(),
+            pending_control: None,
         }
     }
+    fn mark_control_unknown(&mut self) {
+        if let Some(control) = self.pending_control.take() {
+            control
+                .state
+                .send_replace(OperationState::Unknown(control.kind));
+        }
+    }
+
     fn clear(&mut self) {
         self.active = false;
         self.cache.reset(self.generation);
@@ -723,6 +754,7 @@ async fn event_loop(
             // Apply the activation first instead of rejecting that valid request.
             biased;
             changed = shutdown.changed() => if changed.is_err() || *shutdown.borrow() { return Ok(()); },
+            _ = wait_for_control_timeout(detail.pending_control.as_ref()) => detail.mark_control_unknown(),
             changed = detail_io.active.changed() => {
                 if changed.is_err() { return Ok(()); }
                 let expand = *detail_io.active.borrow();
@@ -789,9 +821,9 @@ async fn event_loop(
                 let Some(request) = request else { return Ok(()); };
                 handle_detail_request(socket, next_id, parser, state, sender, detail, detail_io, shutdown, api_key, file_reader, operation_io, request).await?;
             },
-            action = operation_io.actions.recv() => {
+            action = operation_io.actions.recv(), if detail.pending_control.is_none() => {
                 let Some(action) = action else { return Ok(()); };
-                handle_printer_action(socket, next_id, parser, state, sender, detail, detail_io, shutdown, api_key, file_reader, operation_io, action).await?;
+                send_printer_action(socket, next_id, state, detail, file_reader, operation_io, action).await?;
             },
             camera_request = camera_io.requests.recv() => {
                 let Some(camera_request) = camera_request else { return Ok(()); };
@@ -1043,19 +1075,13 @@ async fn handle_camera_request(
     });
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn handle_printer_action(
+async fn send_printer_action(
     socket: &mut MoonrakerSocket,
     next_id: &mut u64,
-    parser: &mut StatusParser,
-    state: &mut PrinterState,
-    sender: &watch::Sender<PrinterState>,
+    state: &PrinterState,
     detail: &mut DetailSession,
-    detail_io: &mut DetailIo,
-    shutdown: &mut watch::Receiver<bool>,
-    api_key: Option<&str>,
     file_reader: &FileReader,
-    operation_io: &mut OperationIo,
+    operation_io: &OperationIo,
     action: PrinterAction,
 ) -> Result<(), MoonrakerError> {
     let kind = action.kind();
@@ -1091,45 +1117,23 @@ async fn handle_printer_action(
             return Ok(());
         }
     };
-    let _ = operation_io
+    operation_io
         .state
         .send_replace(OperationState::Sending(kind));
-    send_value(socket, &request).await?;
-    let reply = wait_for_reply(
-        socket,
-        *next_id,
-        parser,
-        state,
-        sender,
-        detail,
-        detail_io,
-        shutdown,
-        api_key,
-        action_response_timeout(&action),
-    )
-    .await;
-    *next_id += 1;
-    match reply {
-        Ok(RpcReply::Result(_)) => {
-            let _ = operation_io
-                .state
-                .send_replace(OperationState::Accepted(kind));
-            Ok(())
-        }
-        Ok(RpcReply::Error { message, .. }) => {
-            let _ = operation_io.state.send_replace(OperationState::Rejected {
-                action: kind,
-                message: sanitize_message(&message, 256),
-            });
-            Ok(())
-        }
-        Err(error) => {
-            let _ = operation_io
-                .state
-                .send_replace(OperationState::Unknown(kind));
-            Err(error)
-        }
+    if let Err(error) = send_value(socket, &request).await {
+        operation_io
+            .state
+            .send_replace(OperationState::Unknown(kind));
+        return Err(error);
     }
+    detail.pending_control = Some(PendingControl {
+        id: *next_id,
+        kind,
+        deadline: tokio::time::Instant::now() + action_response_timeout(&action),
+        state: operation_io.state.clone(),
+    });
+    *next_id += 1;
+    Ok(())
 }
 
 fn start_upload(
@@ -1695,117 +1699,35 @@ async fn wait_for_detail_reply(
     operation_io: &mut OperationIo,
 ) -> Result<RpcReply, MoonrakerError> {
     let deadline = tokio::time::Instant::now() + REQUEST_TIMEOUT;
-    let mut control_pending: Option<(u64, local::PrinterActionKind, tokio::time::Instant)> = None;
-    let mut auxiliary_reply = None;
     loop {
         tokio::select! {
+            biased;
             changed = shutdown.changed() => if changed.is_err() || *shutdown.borrow() { return Err(MoonrakerError::Cancelled); },
             changed = detail_io.active.changed(), if purpose == RpcPurpose::Detail => {
                 if changed.is_err() || *detail_io.active.borrow() != detail.active {
                     return Err(MoonrakerError::Cancelled);
                 }
             },
-            action = operation_io.actions.recv(), if control_pending.is_none() => {
+            _ = tokio::time::sleep_until(deadline) => return Err(MoonrakerError::RequestTimeout),
+            _ = wait_for_control_timeout(detail.pending_control.as_ref()) => detail.mark_control_unknown(),
+            action = operation_io.actions.recv(), if detail.pending_control.is_none() => {
                 let Some(action) = action else { return Err(MoonrakerError::Cancelled); };
-                let kind = action.kind();
-                if operation_io.state.borrow().is_pending() {
-                    let _ = operation_io.state.send_replace(OperationState::Rejected {
-                        action: kind,
-                        message: "Ya hay una operación de impresora en curso".to_owned(),
-                    });
-                    continue;
-                }
-                if let Err(message) = action_allowed(&action, state) {
-                    let _ = operation_io.state.send_replace(OperationState::Rejected { action: kind, message });
-                    continue;
-                }
-                if let PrinterAction::UploadGcode { source, destination } = action {
-                    start_upload(file_reader, operation_io, source, destination);
-                    continue;
-                }
-                let control_id = *next_id;
-                let request = match runtime_control_request(control_id, &action, detail, state) {
-                    Ok(request) => request,
-                    Err(error) => {
-                        let _ = operation_io.state.send_replace(OperationState::Rejected {
-                            action: kind,
-                            message: error.to_string(),
-                        });
-                        continue;
-                    }
-                };
-                *next_id += 1;
-                let _ = operation_io.state.send_replace(OperationState::Sending(kind));
-                if let Err(error) = send_value(socket, &request).await {
-                    let _ = operation_io.state.send_replace(OperationState::Unknown(kind));
-                    return Err(error);
-                }
-                control_pending = Some((control_id, kind, tokio::time::Instant::now() + action_response_timeout(&action)));
+                send_printer_action(socket, next_id, state, detail, file_reader, operation_io, action).await?;
             },
-            received = timeout_at(control_pending.map_or(deadline, |(_, _, until)| until), socket.next()) => {
-                let message = match received {
-                    Err(_) => {
-                        if let Some((_, kind, _)) = control_pending.take() {
-                            let _ = operation_io.state.send_replace(OperationState::Unknown(kind));
-                        }
-                        if let Some(reply) = auxiliary_reply.take() { return Ok(reply); }
-                        return Err(MoonrakerError::RequestTimeout);
-                    }
-                    Ok(None) => {
-                        if let Some((_, kind, _)) = control_pending.take() {
-                            let _ = operation_io.state.send_replace(OperationState::Unknown(kind));
-                        }
-                        return Err(MoonrakerError::Transport("Moonraker cerró la conexión".to_owned()));
-                    }
-                    Ok(Some(Err(error))) => {
-                        if let Some((_, kind, _)) = control_pending.take() {
-                            let _ = operation_io.state.send_replace(OperationState::Unknown(kind));
-                        }
-                        return Err(MoonrakerError::Transport(error.to_string()));
-                    }
-                    Ok(Some(Ok(message))) => message,
-                };
+            received = socket.next() => {
+                let message = received
+                    .ok_or_else(|| MoonrakerError::Transport("Moonraker cerró la conexión".to_owned()))?
+                    .map_err(|error| MoonrakerError::Transport(error.to_string()))?;
                 if let Message::Ping(payload) = &message {
                     socket.send(Message::Pong(payload.clone())).await.map_err(|error| MoonrakerError::Transport(error.to_string()))?;
                     continue;
                 }
-                let value = match message_to_json(message) {
-                    Ok(Some(value)) => value,
-                    Ok(None) => continue,
-                    Err(error) => {
-                        if let Some((_, kind, _)) = control_pending.take() {
-                            operation_io.state.send_replace(OperationState::Unknown(kind));
-                        }
-                        return Err(error);
-                    }
-                };
-                let id = value.get("id").and_then(Value::as_u64);
-                if id == Some(expected_id) {
-                    let reply = if let Some(error) = value.get("error") {
-                        RpcReply::Error { code: error.get("code").and_then(Value::as_i64), message: sanitize_message(&error.to_string(), 512) }
-                    } else {
-                        RpcReply::Result(value.get("result").cloned().ok_or_else(|| MoonrakerError::InvalidMessage("respuesta sin result".to_owned()))?)
-                    };
-                    if control_pending.is_none() { return Ok(reply); }
-                    auxiliary_reply = Some(reply);
-                    continue;
-                }
-                if let Some((control_id, kind, _)) = control_pending
-                    && id == Some(control_id)
-                {
-                    control_pending = None;
+                let Some(value) = message_to_json(message)? else { continue; };
+                if value.get("id").and_then(Value::as_u64) == Some(expected_id) {
                     if let Some(error) = value.get("error") {
-                        let _ = operation_io.state.send_replace(OperationState::Rejected {
-                            action: kind,
-                            message: sanitize_message(&error.to_string(), 256),
-                        });
-                    } else if value.get("result").is_some() {
-                        let _ = operation_io.state.send_replace(OperationState::Accepted(kind));
-                    } else {
-                        let _ = operation_io.state.send_replace(OperationState::Unknown(kind));
+                        return Ok(RpcReply::Error { code: error.get("code").and_then(Value::as_i64), message: sanitize_message(&error.to_string(), 512) });
                     }
-                    if let Some(reply) = auxiliary_reply.take() { return Ok(reply); }
-                    continue;
+                    return Ok(RpcReply::Result(value.get("result").cloned().ok_or_else(|| MoonrakerError::InvalidMessage("respuesta sin result".to_owned()))?));
                 }
                 match apply_notification(&value, parser, state, sender, detail, detail_io, api_key)? {
                     SessionSignal::Continue => {}
@@ -1911,6 +1833,7 @@ async fn wait_for_reply(
     loop {
         tokio::select! {
             changed = shutdown.changed() => if changed.is_err() || *shutdown.borrow() { return Err(MoonrakerError::Cancelled); },
+            _ = wait_for_control_timeout(detail.pending_control.as_ref()) => detail.mark_control_unknown(),
             received = timeout_at(deadline, socket.next()) => {
                 let message = received.map_err(|_| MoonrakerError::Transport("timeout de Moonraker".to_owned()))?
                     .ok_or_else(|| MoonrakerError::Transport("Moonraker cerró la conexión".to_owned()))?
@@ -1978,6 +1901,26 @@ fn apply_notification(
     detail_io: &mut DetailIo,
     api_key: Option<&str>,
 ) -> Result<SessionSignal, MoonrakerError> {
+    if let Some(control) = detail
+        .pending_control
+        .take_if(|control| value.get("id").and_then(Value::as_u64) == Some(control.id))
+    {
+        let kind = control.kind;
+        let result = if tokio::time::Instant::now() >= control.deadline {
+            OperationState::Unknown(kind)
+        } else if let Some(error) = value.get("error") {
+            OperationState::Rejected {
+                action: kind,
+                message: sanitize_message(&error.to_string(), 256),
+            }
+        } else if value.get("result").is_some() {
+            OperationState::Accepted(kind)
+        } else {
+            OperationState::Unknown(kind)
+        };
+        control.state.send_replace(result);
+        return Ok(SessionSignal::Continue);
+    }
     let Some(method) = value.get("method").and_then(Value::as_str) else {
         return Ok(SessionSignal::Continue);
     };
