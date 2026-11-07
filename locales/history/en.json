@@ -1,0 +1,78 @@
+{
+  "history": {
+    "sidebar": {
+      "toggle": "History",
+      "title": "Print history",
+      "unavailable_printer": "Printer no longer available",
+      "partial": "Partial capture"
+    },
+    "pagination": {
+      "label": "Pagination",
+      "previous": "Go to previous page",
+      "next": "Go to next page"
+    },
+    "table": {
+      "name": "Print",
+      "state": "Status",
+      "started": "Started (UTC)",
+      "print_time": "Print time",
+      "grams": "Grams",
+      "length": "Metres"
+    },
+    "filters": {
+      "search": "Search by filename",
+      "state": "Status: %{state}",
+      "all_states": "All statuses",
+      "dates": "Dates (UTC)",
+      "apply": "Apply filters",
+      "name_too_long": "Search text must not exceed 1,024 bytes.",
+      "invalid_dates": "Choose a valid date range with the start before or on the end date."
+    },
+    "detail": {
+      "close": "Close details",
+      "progress": "Recorded progress",
+      "ended": "Finished (UTC)",
+      "total_time": "Total elapsed time",
+      "materials": "Reported materials",
+      "source": "Record source",
+      "capture": "Capture"
+    },
+    "page": "Page %{current} of %{total}",
+    "no_matches": "No prints match these filters.",
+    "query_error": "Could not query local history.",
+    "capture_unmarked": "No partial-capture flag",
+    "totals": {
+      "jobs": "Total prints",
+      "longest": "Longest job",
+      "elapsed": "Total elapsed time",
+      "average": "Average per print",
+      "print_time": "Print time",
+      "filament": "Total filament used",
+      "lifetime_print_time": "Accumulated print time",
+      "lifetime_filament": "Accumulated filament consumption",
+      "title": "Printer statistics"
+    },
+    "loading_totals": "Loading…",
+    "source": {
+      "imported_help": "History imported from the printer · Saved locally",
+      "observed_help": "Observed-session history · Saved locally",
+      "native": "native (printer)",
+      "observed": "observed (app session)"
+    },
+    "loading": "Loading local history records…",
+    "empty": "No prints recorded in local history.",
+    "incomplete": "Incomplete capture (the entire print was not observed)",
+    "missing_name": "Name not reported",
+    "previous": "Previous",
+    "not_loaded": "Local history not loaded. Press “Refresh local history” to load records.",
+    "refresh": "Refresh local history",
+    "count": "%{count} recorded prints",
+    "materials": "Reported materials: %{materials}",
+    "read_error": "Could not read local history: %{error}",
+    "record": {
+      "source": "%{date} · %{source}",
+      "metrics": "%{status} · %{progress} · Print time: %{duration} · %{grams} · %{length}",
+      "metrics_total": "%{status} · %{progress} · Print time: %{duration} · Total time: %{total_time} · %{grams} · %{length}"
+    }
+  }
+}

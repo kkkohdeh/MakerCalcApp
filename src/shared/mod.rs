@@ -1,0 +1,9 @@
+pub(crate) mod control;
+pub(crate) mod gcode;
+pub(crate) mod history;
+pub(crate) mod machine;
+pub(crate) mod notifications;
+pub(crate) mod printer;
+pub(crate) mod telemetry;
+pub(crate) mod thumbnail;
+pub(crate) mod workspace;

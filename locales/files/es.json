@@ -1,0 +1,117 @@
+{
+  "files": {
+    "table": {
+      "duration_partial": "Resultados de duración parciales: %{count} archivos sin estimación conocida.",
+      "duration_read_failed": "No se pudieron leer algunas duraciones. Las lecturas están limitadas; usa Actualizar para reintentar.",
+      "columns": {
+        "name": "Archivo",
+        "duration": "Duración estimada",
+        "size": "Tamaño",
+        "modified": "Modificado"
+      },
+      "empty": "Sin archivos que coincidan con la búsqueda y los filtros"
+    },
+    "filters": {
+      "duration": {
+        "label": "Duración",
+        "under": "Menos de 1 h",
+        "middle": "De 1 a menos de 4 h",
+        "over": "4 h o más",
+        "summary": "Duración: %{value}"
+      },
+      "size": {
+        "label": "Tamaño",
+        "under": "Menos de 10 MB",
+        "middle": "De 10 a menos de 100 MB",
+        "over": "100 MB o más",
+        "summary": "Tamaño: %{value}"
+      },
+      "options": {
+        "all": "Todos",
+        "unknown": "Sin información"
+      }
+    },
+    "list": {
+      "title": "G-codes en la impresora",
+      "summary": "%{count} de %{total} archivos"
+    },
+    "actions": {
+      "upload_gcode": "Subir G-code",
+      "print_file": "Imprimir este archivo"
+    },
+    "upload": {
+      "select_file": "Selecciona un G-code",
+      "drop_title": "Suelta tu G-code aquí",
+      "drop_description": "Subir a %{printer} · Un archivo por vez",
+      "drop_invalid": "Suelta un archivo .gcode o .g",
+      "drop_hint": "Confirmarás antes de subirlo",
+      "error": {
+        "title": "No se pudo preparar la subida",
+        "invalid_name": "El nombre del archivo no es válido",
+        "unreadable": "No se pudo leer el archivo local",
+        "invalid_size": "Elige un G-code no vacío de hasta 256 MiB",
+        "one_file": "Elige un solo archivo G-code por vez",
+        "unavailable": "La impresora o la sección Archivos ya no está disponible. Inténtalo de nuevo."
+      }
+    },
+    "status": {
+      "loading": "Cargando lista de archivos de la impresora…",
+      "not_loaded": "Presiona «Actualizar» para consultar los archivos",
+      "error": "Error al cargar la lista de archivos de la impresora",
+      "unsupported": "La impresora no admite listar archivos por esta conexión",
+      "denied": "Acceso denegado: la impresora no permite consultar sus archivos",
+      "limited": "Lectura parcial: pueden faltar archivos o metadatos para los filtros."
+    },
+    "details": {
+      "empty": "Selecciona un archivo de la lista para ver sus detalles.",
+      "no_selection": "Sin archivo seleccionado",
+      "metadata": {
+        "format": "Formato",
+        "storage": "Almacenamiento",
+        "storage_printer": "Memoria de la impresora",
+        "size": "Tamaño"
+      },
+      "slicing": {
+        "title": "Laminación",
+        "duration": "Duración",
+        "filament": "Filamento",
+        "layers": "Capas",
+        "loading": "Cargando datos de laminación del archivo…",
+        "error": "Error al leer los datos de laminación del archivo.",
+        "not_loaded": "Datos de laminación aún no solicitados.",
+        "unsupported": "La impresora no admite inspección de detalles para este archivo.",
+        "denied": "Acceso denegado a los datos de laminación de este archivo.",
+        "partial": "Datos de laminación parciales: se muestran solo los valores recibidos.",
+        "limited_no_facts": "Lectura parcial: no se recibieron datos de laminación para este archivo.",
+        "no_facts": "La impresora no entregó datos de laminación para este archivo."
+      }
+    },
+    "preview": {
+      "title": "Archivo seleccionado",
+      "loading": "Cargando vista previa...",
+      "empty": "Vista previa no disponible"
+    },
+    "print": {
+      "disabled": {
+        "prefix": "No disponible: %{reason}",
+        "no_file": "Selecciona un archivo de la lista para imprimir",
+        "disconnected": "Impresora desconectada",
+        "telemetry_waiting": "Esperando telemetría de la impresora",
+        "operation_pending": "Hay una operación en curso en la impresora",
+        "bed_not_cleared": "Retire la pieza terminada de la cama antes de imprimir",
+        "already_printing": "La impresora ya está imprimiendo",
+        "print_paused": "La impresora tiene un trabajo en pausa",
+        "not_ready": "La impresora no está lista para iniciar un trabajo"
+      }
+    },
+    "toasts": {
+      "inspect_failed": {
+        "title": "No se pudieron solicitar los detalles del archivo",
+        "description": "La consulta no entró en la cola. Vuelve a seleccionar el archivo."
+      }
+    },
+    "search": {
+      "placeholder": "Buscar archivo gcode..."
+    }
+  }
+}

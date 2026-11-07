@@ -1,0 +1,78 @@
+{
+  "history": {
+    "sidebar": {
+      "toggle": "Historial",
+      "title": "Historial de impresión",
+      "unavailable_printer": "Impresora ya no disponible",
+      "partial": "Captura parcial"
+    },
+    "pagination": {
+      "label": "Paginación",
+      "previous": "Ir a la página anterior",
+      "next": "Ir a la página siguiente"
+    },
+    "table": {
+      "name": "Impresión",
+      "state": "Estado",
+      "started": "Inicio (UTC)",
+      "print_time": "Tiempo imprimiendo",
+      "grams": "Gramos",
+      "length": "Metros"
+    },
+    "filters": {
+      "search": "Buscar por nombre de archivo",
+      "state": "Estado: %{state}",
+      "all_states": "Todos los estados",
+      "dates": "Fechas (UTC)",
+      "apply": "Aplicar filtros",
+      "name_too_long": "El texto de búsqueda no debe superar 1.024 bytes.",
+      "invalid_dates": "Elige un rango válido con la fecha inicial anterior o igual a la final."
+    },
+    "detail": {
+      "close": "Cerrar detalle",
+      "progress": "Progreso registrado",
+      "ended": "Fin (UTC)",
+      "total_time": "Tiempo total transcurrido",
+      "materials": "Materiales declarados",
+      "source": "Origen del registro",
+      "capture": "Captura"
+    },
+    "page": "Página %{current} de %{total}",
+    "no_matches": "Ninguna impresión coincide con estos filtros.",
+    "query_error": "No se pudo consultar el historial local.",
+    "capture_unmarked": "Sin marca de captura parcial",
+    "totals": {
+      "jobs": "Impresiones totales",
+      "longest": "Tarea más larga",
+      "elapsed": "Tiempo total transcurrido",
+      "average": "Promedio por impresión",
+      "print_time": "Tiempo imprimiendo",
+      "filament": "Filamento total usado",
+      "lifetime_print_time": "Tiempo imprimiendo acumulado",
+      "lifetime_filament": "Filamento consumido acumulado",
+      "title": "Estadísticas de la impresora"
+    },
+    "loading_totals": "Cargando...",
+    "source": {
+      "imported_help": "Historial importado de la impresora · Guardado localmente",
+      "observed_help": "Historial de sesiones observadas · Guardado localmente",
+      "native": "nativo (impresora)",
+      "observed": "observado (sesión app)"
+    },
+    "loading": "Cargando registros del historial local…",
+    "empty": "No hay impresiones registradas en el historial local.",
+    "incomplete": "Captura incompleta (no se observó toda la impresión)",
+    "missing_name": "Nombre no informado",
+    "previous": "Anterior",
+    "not_loaded": "Historial local no cargado. Presiona «Actualizar historial local» para consultar los registros.",
+    "refresh": "Actualizar historial local",
+    "count": "%{count} impresiones registradas",
+    "materials": "Materiales declarados: %{materials}",
+    "read_error": "Error al leer el historial local: %{error}",
+    "record": {
+      "source": "%{date} · %{source}",
+      "metrics": "%{status} · %{progress} · Tiempo imprimiendo: %{duration} · %{grams} · %{length}",
+      "metrics_total": "%{status} · %{progress} · Tiempo imprimiendo: %{duration} · Tiempo total: %{total_time} · %{grams} · %{length}"
+    }
+  }
+}

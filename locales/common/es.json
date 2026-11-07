@@ -1,0 +1,200 @@
+{
+  "common": {
+    "calendar": {
+      "previous_month": "Mes anterior",
+      "next_month": "Mes siguiente",
+      "short_month": {
+        "january": "ene.",
+        "february": "feb.",
+        "march": "mar.",
+        "april": "abr.",
+        "may": "may.",
+        "june": "jun.",
+        "july": "jul.",
+        "august": "ago.",
+        "september": "sept.",
+        "october": "oct.",
+        "november": "nov.",
+        "december": "dic."
+      }
+    },
+    "actions": {
+      "save": "Guardar",
+      "cancel": "Cancelar",
+      "close": "Cerrar",
+      "retry": "Reintentar",
+      "confirm": "Confirmar",
+      "delete": "Eliminar",
+      "edit": "Editar",
+      "add": "Añadir",
+      "remove": "Quitar",
+      "apply": "Aplicar",
+      "ok": "Aceptar",
+      "back": "Atrás",
+      "next": "Siguiente",
+      "refresh": "Actualizar",
+      "search": "Buscar",
+      "clear": "Limpiar",
+      "copy": "Copiar",
+      "open": "Abrir",
+      "dismiss": "Descartar",
+      "saving": "Guardando…",
+      "bay_short": "← Bahía",
+      "bay": "← Bahía de impresoras"
+    },
+    "status": {
+      "idle": "En espera",
+      "printing": "Imprimiendo",
+      "paused": "Pausado",
+      "completed": "Completado",
+      "cancelled": "Cancelado",
+      "error": "Error",
+      "unknown": "Desconocido",
+      "connecting": "Conectando",
+      "connected": "Conectado",
+      "disconnected": "Desconectada",
+      "needs_credentials": "Requiere credenciales",
+      "incompatible": "Incompatible",
+      "ready": "Listo",
+      "loading": "Cargando",
+      "not_configured": "Sin configurar"
+    },
+    "read_value": {
+      "unsupported": "No se expone",
+      "missing": "Sin dato",
+      "disconnected": "Sin conexión",
+      "error": "Error de lectura",
+      "denied": "Sin permiso",
+      "limited": "Lectura parcial",
+      "retained": "%{value} · Último dato conocido",
+      "refresh_failed": "%{value} · Error al actualizar",
+      "refresh_denied": "%{value} · Sin permiso para actualizar"
+    },
+    "languages": {
+      "system": "Predeterminado del sistema",
+      "en": "Inglés",
+      "es": "Español"
+    },
+    "feedback": {
+      "toast_overflow": "Panel lleno: hubo errores adicionales sin mostrar. Los errores visibles se conservan hasta que los cierres.",
+      "toast_limit": "Límite de avisos alcanzado. Cierra los errores pendientes con la ✕.",
+      "dismiss_overflow": "Cerrar aviso de errores adicionales"
+    },
+    "labels": {
+      "layer": "Capa %{current}/%{total}",
+      "layer_single": "Capa %{current}",
+      "layer_unknown": "Capa —",
+      "no_sample": "Sin muestra",
+      "seconds": "%{count} s",
+      "minutes": "%{count} min",
+      "printers": "Tus impresoras",
+      "printer_count": "%{count} impresoras"
+    },
+    "errors": {
+      "operation_busy": "Hay otra operación en curso. La orden adicional no se envió.",
+      "send": "No se pudo enviar la operación",
+      "controller_closed": "El controlador cerró la operación"
+    },
+    "updates": {
+      "downloading_short": "Descargando…",
+      "downloading": "Descargando actualización…",
+      "restart": "Reiniciar",
+      "restart_version": "Reiniciar (%{version})",
+      "restart_tooltip": "Reiniciar para instalar %{version}"
+    },
+    "charts": {
+      "now": "ahora"
+    },
+    "startup": {
+      "failed": "MakerCalc no pudo iniciar:\n\n%{error}",
+      "diagnostics_failed": "MakerCalc no pudo iniciar el diagnóstico: %{error}",
+      "incomplete_profile": "El perfil de impresoras está incompleto: falta la configuración principal y existe un respaldo. Restaura el perfil antes de abrir la app.",
+      "runtime_failed": "No se pudo crear el runtime: %{error}"
+    }
+  },
+  "gpui_component": {
+    "Dialog": {
+      "ok": "Aceptar",
+      "cancel": "Cancelar"
+    },
+    "Input": {
+      "Cut": "Cortar",
+      "Copy": "Copiar",
+      "Paste": "Pegar",
+      "Select All": "Seleccionar todo",
+      "Replace": "Reemplazar",
+      "Replace All": "Reemplazar todo",
+      "Decrement": "Reducir",
+      "Increment": "Aumentar",
+      "Go to Definition": "Ir a la definición",
+      "Show Code Actions": "Mostrar acciones de código"
+    },
+    "Select": {
+      "placeholder": "Seleccione..."
+    },
+    "ComboBox": {
+      "placeholder": "Seleccione...",
+      "search_placeholder": "Buscar...",
+      "empty": "Sin resultados"
+    },
+    "Command": {
+      "placeholder": "Escriba un comando o busque...",
+      "empty": "No se encontraron resultados."
+    },
+    "List": {
+      "search_placeholder": "Buscar..."
+    },
+    "Settings": {
+      "search_placeholder": "Buscar...",
+      "Reset All": "Restablecer todo"
+    },
+    "Pagination": {
+      "previous": "Anterior",
+      "next": "Siguiente"
+    },
+    "Dock": {
+      "Unnamed": "Sin nombre",
+      "Close": "Cerrar",
+      "Zoom In": "Acercar",
+      "Zoom Out": "Alejar",
+      "Collapse": "Contraer",
+      "Expand": "Expandir"
+    },
+    "DatePicker": {
+      "placeholder": "Seleccionar fecha"
+    },
+    "ColorPicker": {
+      "Palette": "Paleta",
+      "HSLA": "HSLA",
+      "Hue": "Tono",
+      "Saturation": "Saturación",
+      "Lightness": "Luminosidad",
+      "Alpha": "Alfa"
+    },
+    "Calendar": {
+      "week": {
+        "0": "Do",
+        "1": "Lu",
+        "2": "Ma",
+        "3": "Mi",
+        "4": "Ju",
+        "5": "Vi",
+        "6": "Sá"
+      },
+      "month": {
+        "January": "Enero",
+        "February": "Febrero",
+        "March": "Marzo",
+        "April": "Abril",
+        "May": "Mayo",
+        "June": "Junio",
+        "July": "Julio",
+        "August": "Agosto",
+        "September": "Septiembre",
+        "October": "Octubre",
+        "November": "Noviembre",
+        "December": "Diciembre"
+      }
+    }
+  }
+}

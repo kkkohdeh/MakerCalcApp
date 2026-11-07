@@ -1,0 +1,117 @@
+{
+  "files": {
+    "table": {
+      "duration_partial": "Duration results are partial: %{count} files have no known estimate.",
+      "duration_read_failed": "Some file durations could not be read. Reads are limited; use Refresh to retry.",
+      "columns": {
+        "name": "File",
+        "duration": "Estimated duration",
+        "size": "Size",
+        "modified": "Modified"
+      },
+      "empty": "No files match the search and filters"
+    },
+    "filters": {
+      "duration": {
+        "label": "Duration",
+        "under": "Under 1 h",
+        "middle": "1 to under 4 h",
+        "over": "4 h or more",
+        "summary": "Duration: %{value}"
+      },
+      "size": {
+        "label": "Size",
+        "under": "Under 10 MB",
+        "middle": "10 to under 100 MB",
+        "over": "100 MB or more",
+        "summary": "Size: %{value}"
+      },
+      "options": {
+        "all": "All",
+        "unknown": "No information"
+      }
+    },
+    "list": {
+      "title": "G-codes on printer",
+      "summary": "%{count} of %{total} files"
+    },
+    "actions": {
+      "upload_gcode": "Upload G-code",
+      "print_file": "Print this file"
+    },
+    "upload": {
+      "select_file": "Select a G-code",
+      "drop_title": "Drop your G-code here",
+      "drop_description": "Upload to %{printer} · One file at a time",
+      "drop_invalid": "Drop one .gcode or .g file",
+      "drop_hint": "You will confirm before uploading",
+      "error": {
+        "title": "Could not prepare upload",
+        "invalid_name": "File name is invalid",
+        "unreadable": "Could not read the local file",
+        "invalid_size": "Choose a non-empty G-code file up to 256 MiB",
+        "one_file": "Choose one G-code file at a time",
+        "unavailable": "Printer or Files section is no longer available. Try again."
+      }
+    },
+    "status": {
+      "loading": "Loading printer file list…",
+      "not_loaded": "Click \"Refresh\" to query files",
+      "error": "Error loading printer file list",
+      "unsupported": "Printer does not support listing files on this connection",
+      "denied": "Access denied: printer does not allow querying files",
+      "limited": "Partial reading: files or metadata for filters may be missing."
+    },
+    "details": {
+      "empty": "Select a file from the list to view its details.",
+      "no_selection": "No file selected",
+      "metadata": {
+        "format": "Format",
+        "storage": "Storage",
+        "storage_printer": "Printer memory",
+        "size": "Size"
+      },
+      "slicing": {
+        "title": "Slicing",
+        "duration": "Duration",
+        "filament": "Filament",
+        "layers": "Layers",
+        "loading": "Loading file slicing data…",
+        "error": "Error reading file slicing data.",
+        "not_loaded": "Slicing data not yet requested.",
+        "unsupported": "Printer does not support inspecting details for this file.",
+        "denied": "Access denied to slicing data for this file.",
+        "partial": "Partial slicing data: only received values are shown.",
+        "limited_no_facts": "Partial reading: no slicing data received for this file.",
+        "no_facts": "Printer did not provide slicing data for this file."
+      }
+    },
+    "preview": {
+      "title": "Selected file",
+      "loading": "Loading preview…",
+      "empty": "Preview unavailable"
+    },
+    "print": {
+      "disabled": {
+        "prefix": "Unavailable: %{reason}",
+        "no_file": "Select a file from the list to print",
+        "disconnected": "Printer disconnected",
+        "telemetry_waiting": "Waiting for printer telemetry",
+        "operation_pending": "An operation is currently in progress on the printer",
+        "bed_not_cleared": "Remove finished part from bed before printing",
+        "already_printing": "Printer is already printing",
+        "print_paused": "Printer has a paused job",
+        "not_ready": "Printer is not ready to start a job"
+      }
+    },
+    "toasts": {
+      "inspect_failed": {
+        "title": "Could not request file details",
+        "description": "Request failed to enter queue. Please reselect the file."
+      }
+    },
+    "search": {
+      "placeholder": "Search G-code files…"
+    }
+  }
+}

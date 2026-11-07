@@ -1,0 +1,200 @@
+{
+  "common": {
+    "calendar": {
+      "previous_month": "Previous month",
+      "next_month": "Next month",
+      "short_month": {
+        "january": "Jan",
+        "february": "Feb",
+        "march": "Mar",
+        "april": "Apr",
+        "may": "May",
+        "june": "Jun",
+        "july": "Jul",
+        "august": "Aug",
+        "september": "Sep",
+        "october": "Oct",
+        "november": "Nov",
+        "december": "Dec"
+      }
+    },
+    "actions": {
+      "save": "Save",
+      "cancel": "Cancel",
+      "close": "Close",
+      "retry": "Retry",
+      "confirm": "Confirm",
+      "delete": "Delete",
+      "edit": "Edit",
+      "add": "Add",
+      "remove": "Remove",
+      "apply": "Apply",
+      "ok": "OK",
+      "back": "Back",
+      "next": "Next",
+      "refresh": "Refresh",
+      "search": "Search",
+      "clear": "Clear",
+      "copy": "Copy",
+      "open": "Open",
+      "dismiss": "Dismiss",
+      "saving": "Saving…",
+      "bay_short": "← Bay",
+      "bay": "← Printer bay"
+    },
+    "status": {
+      "idle": "Idle",
+      "printing": "Printing",
+      "paused": "Paused",
+      "completed": "Completed",
+      "cancelled": "Cancelled",
+      "error": "Error",
+      "unknown": "Unknown",
+      "connecting": "Connecting",
+      "connected": "Connected",
+      "disconnected": "Disconnected",
+      "needs_credentials": "Needs credentials",
+      "incompatible": "Incompatible",
+      "ready": "Ready",
+      "loading": "Loading",
+      "not_configured": "Not configured"
+    },
+    "read_value": {
+      "unsupported": "Not exposed",
+      "missing": "No data",
+      "disconnected": "No connection",
+      "error": "Read error",
+      "denied": "Access denied",
+      "limited": "Partial read",
+      "retained": "%{value} · Last known value",
+      "refresh_failed": "%{value} · Refresh failed",
+      "refresh_denied": "%{value} · Refresh access denied"
+    },
+    "languages": {
+      "system": "System default",
+      "en": "English",
+      "es": "Spanish"
+    },
+    "feedback": {
+      "toast_overflow": "Notice limit reached: additional errors occurred without being displayed. Visible errors are preserved until dismissed.",
+      "toast_limit": "Notice limit reached. Dismiss pending errors with the ✕.",
+      "dismiss_overflow": "Dismiss additional errors notice"
+    },
+    "labels": {
+      "layer": "Layer %{current}/%{total}",
+      "layer_single": "Layer %{current}",
+      "layer_unknown": "Layer —",
+      "no_sample": "No sample",
+      "seconds": "%{count} s",
+      "minutes": "%{count} min",
+      "printers": "Your printers",
+      "printer_count": "%{count} printers"
+    },
+    "errors": {
+      "operation_busy": "Another operation is in progress. The additional command was not sent.",
+      "send": "Could not send the operation",
+      "controller_closed": "The controller closed the operation"
+    },
+    "updates": {
+      "downloading_short": "Downloading…",
+      "downloading": "Downloading update…",
+      "restart": "Restart",
+      "restart_version": "Restart (%{version})",
+      "restart_tooltip": "Restart to install %{version}"
+    },
+    "charts": {
+      "now": "now"
+    },
+    "startup": {
+      "failed": "MakerCalc could not start:\n\n%{error}",
+      "diagnostics_failed": "MakerCalc could not start diagnostics: %{error}",
+      "incomplete_profile": "The printer profile is incomplete: the main configuration is missing and a backup exists. Restore the profile before opening the app.",
+      "runtime_failed": "Could not create the runtime: %{error}"
+    }
+  },
+  "gpui_component": {
+    "Dialog": {
+      "ok": "OK",
+      "cancel": "Cancel"
+    },
+    "Input": {
+      "Cut": "Cut",
+      "Copy": "Copy",
+      "Paste": "Paste",
+      "Select All": "Select All",
+      "Replace": "Replace",
+      "Replace All": "Replace All",
+      "Decrement": "Decrement",
+      "Increment": "Increment",
+      "Go to Definition": "Go to Definition",
+      "Show Code Actions": "Show Code Actions"
+    },
+    "Select": {
+      "placeholder": "Please select"
+    },
+    "ComboBox": {
+      "placeholder": "Please select",
+      "search_placeholder": "Search...",
+      "empty": "No results"
+    },
+    "Command": {
+      "placeholder": "Type a command or search...",
+      "empty": "No results found."
+    },
+    "List": {
+      "search_placeholder": "Search..."
+    },
+    "Settings": {
+      "search_placeholder": "Search...",
+      "Reset All": "Reset All"
+    },
+    "Pagination": {
+      "previous": "Previous",
+      "next": "Next"
+    },
+    "Dock": {
+      "Unnamed": "Unnamed",
+      "Close": "Close",
+      "Zoom In": "Zoom In",
+      "Zoom Out": "Zoom Out",
+      "Collapse": "Collapse",
+      "Expand": "Expand"
+    },
+    "DatePicker": {
+      "placeholder": "Select date"
+    },
+    "ColorPicker": {
+      "Palette": "Palette",
+      "HSLA": "HSLA",
+      "Hue": "Hue",
+      "Saturation": "Saturation",
+      "Lightness": "Lightness",
+      "Alpha": "Alpha"
+    },
+    "Calendar": {
+      "week": {
+        "0": "Su",
+        "1": "Mo",
+        "2": "Tu",
+        "3": "We",
+        "4": "Th",
+        "5": "Fr",
+        "6": "Sa"
+      },
+      "month": {
+        "January": "January",
+        "February": "February",
+        "March": "March",
+        "April": "April",
+        "May": "May",
+        "June": "June",
+        "July": "July",
+        "August": "August",
+        "September": "September",
+        "October": "October",
+        "November": "November",
+        "December": "December"
+      }
+    }
+  }
+}
