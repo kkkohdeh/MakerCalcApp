@@ -31,7 +31,7 @@
 ## Download
 
 <p>
-  <a href="https://github.com/kkkohdeh/MakerCalcApp/releases/latest/download/MakerCalc-Setup.exe"><img src="https://img.shields.io/badge/Download-MakerCalc%20for%20Windows-111827?style=for-the-badge" alt="Download MakerCalc for Windows"></a>
+  <a href="https://github.com/kkkohdeh/MakerCalcApp/releases/download/v0.0.6/MakerCalc-Setup-0.0.6-windows-x64.exe"><img src="https://img.shields.io/badge/Download-MakerCalc%20for%20Windows-111827?style=for-the-badge" alt="Download MakerCalc for Windows"></a>
 </p>
 
 Windows 10 (version 1903 or later) or Windows 11, 64-bit. Release notes for every version are on the [Releases](https://github.com/kkkohdeh/MakerCalcApp/releases) page.
@@ -114,7 +114,7 @@ flowchart LR
 
 ## Install
 
-1. Download [`MakerCalc-Setup.exe`](https://github.com/kkkohdeh/MakerCalcApp/releases/latest/download/MakerCalc-Setup.exe).
+1. Download [`MakerCalc-Setup-0.0.6-windows-x64.exe`](https://github.com/kkkohdeh/MakerCalcApp/releases/download/v0.0.6/MakerCalc-Setup-0.0.6-windows-x64.exe).
 2. Run it. It installs for your user only and doesn't ask for administrator rights.
 3. The installer isn't digitally signed yet, so Windows may show *"Windows protected your PC"*. Click **More info → Run anyway**. Only download MakerCalc from this page.
 
@@ -124,16 +124,16 @@ flowchart LR
 Every release includes `checksums.sha256`. In PowerShell, from the folder where you saved the installer:
 
 ```powershell
-Get-FileHash .\MakerCalc-Setup.exe -Algorithm SHA256
+Get-FileHash .\MakerCalc-Setup-0.0.6-windows-x64.exe -Algorithm SHA256
 ```
 
-The result must match the `MakerCalc-Setup.exe` line in `checksums.sha256`.
+The result must match the `MakerCalc-Setup-0.0.6-windows-x64.exe` line in `checksums.sha256`.
 
 </details>
 
 ### Updating
 
-MakerCalc tells you when a new version is out, and you can check anytime in **Settings → Software updates**. To update, download the new installer and run it. Your printers, keys and history are kept. Nothing is downloaded or installed without you.
+Check [Releases](https://github.com/kkkohdeh/MakerCalcApp/releases) for updates. The update checker in 0.0.5-beta looks for the old installer filename. When upgrading to 0.0.6, the previous settings and history remain in the old data folder. See the release notes for details.
 
 ## Connect to MakerCalc on the web
 

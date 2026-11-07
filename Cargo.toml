@@ -1,6 +1,6 @@
 [package]
 name = "makercalc"
-version = "0.0.5-beta"
+version = "0.0.6"
 edition = "2024"
 rust-version = "1.95"
 license-file = "LICENSE"
