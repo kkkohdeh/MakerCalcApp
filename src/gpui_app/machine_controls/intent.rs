@@ -1,5 +1,14 @@
 use super::{Control, PrinterEntry};
 use crate::shared::control::{Axis, ControlError, MachineAction};
+use crate::shared::workspace::{Device, ResourceId};
+
+pub(super) fn extrusion_device(printer: &PrinterEntry, id: ResourceId) -> Option<&Device> {
+    printer
+        .detail_state
+        .devices
+        .iter()
+        .find(|device| device.id == id)
+}
 
 pub(super) fn action(
     printer: &PrinterEntry,
@@ -72,10 +81,23 @@ pub(super) fn action(
             distance_mm: number()?,
             speed_mm_s: None,
         },
-        Control::Extrude(nozzle_id) => MachineAction::ExtrudeFilament {
-            nozzle_id,
-            length_mm: number()?,
-        },
+        Control::Extrude(nozzle_id) => {
+            let length_mm = value
+                .trim()
+                .replace(',', ".")
+                .parse::<f64>()
+                .map_err(|_| ControlError::InvalidData)?;
+            let limit = extrusion_device(printer, nozzle_id)
+                .and_then(|device| device.extrusion_limit_mm)
+                .ok_or(ControlError::InvalidState)?;
+            if length_mm.abs() > limit {
+                return Err(ControlError::InvalidData);
+            }
+            MachineAction::ExtrudeFilament {
+                nozzle_id,
+                length_mm,
+            }
+        }
         Control::ClearPlate => MachineAction::ConfirmBuildPlateCleared,
         Control::AutoShutdown(enabled) => MachineAction::SetAutoShutdown {
             enabled,

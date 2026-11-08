@@ -25,7 +25,8 @@ mod intent;
 mod motion;
 mod toolbar;
 
-use intent::action;
+use intent::{action, extrusion_device};
+use toolbar::{localized_decimal, physical_block_message};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Control {
@@ -304,6 +305,20 @@ fn availability(
     if control.requires_idle() {
         motion::availability(printer, false).map_err(|_| ControlError::InvalidState)?;
     }
+    if let Control::Extrude(id) = control {
+        let device = extrusion_device(printer, id).ok_or(ControlError::StaleResource)?;
+        if device.extrusion_requires_material_idle {
+            printer
+                .detail_state
+                .machine
+                .idle_setting_availability(printer.state.telemetry.print_state)?;
+        }
+        if device.extrusion_limit_mm.is_none_or(|limit| limit <= 0.)
+            || device.can_extrude != Some(true)
+        {
+            return Err(ControlError::InvalidState);
+        }
+    }
     if matches!(control, Control::Speed | Control::ZOffset)
         && !printer
             .detail_state
@@ -361,6 +376,7 @@ struct Editor {
     job: Option<MachineJobTarget>,
     z_range: Option<[f64; 2]>,
     shutdown_step: Option<u32>,
+    extrusion_limit: Option<f64>,
     focus: FocusHandle,
     opener: Option<FocusHandle>,
     error: Option<String>,
@@ -388,31 +404,6 @@ fn editor_message(error: ControlError) -> String {
         return t!("printers.controls.reopen").into_owned();
     }
     machine_result_message(error)
-}
-
-fn calibration_block_message(printer: &PrinterEntry, error: ControlError) -> Option<String> {
-    use crate::shared::machine::CalibrationReadiness;
-
-    if error != ControlError::InvalidState {
-        return None;
-    }
-    if let Err(key) = motion::availability(printer, false) {
-        return Some(t!(key).into_owned());
-    }
-    let key = match printer.detail_state.machine.calibration_readiness {
-        Some(CalibrationReadiness::NeedsHoming) => "printers.controls.calibration_home_required",
-        None | Some(CalibrationReadiness::NotReady) => "printers.controls.calibration_wait",
-        _ => return None,
-    };
-    Some(t!(key).into_owned())
-}
-
-fn localized_decimal(value: &str) -> String {
-    if rust_i18n::locale().starts_with("es") {
-        value.replace('.', ",")
-    } else {
-        value.to_owned()
-    }
 }
 
 fn speed_field(
@@ -518,6 +509,7 @@ impl MakerCalcGpuiApp {
                 | Control::AutoShutdown(_)
                 | Control::Name
                 | Control::Calibration(_)
+                | Control::Extrude(_)
         ) && !choices(printer)
             .iter()
             .any(|current| current.control == choice.control)
@@ -556,12 +548,25 @@ impl MakerCalcGpuiApp {
         } else {
             None
         };
+        let extrusion_limit = if let Control::Extrude(id) = choice.control {
+            let Some(limit) =
+                extrusion_device(printer, id).and_then(|device| device.extrusion_limit_mm)
+            else {
+                return;
+            };
+            choice.value = Some(limit.min(10.).to_string());
+            Some(limit)
+        } else {
+            None
+        };
         let job = match choice.control {
-            Control::Speed | Control::ZOffset | Control::AutoShutdown(_) | Control::Name => {
-                Some(printer.state.machine_job_target())
-            }
+            Control::Speed
+            | Control::ZOffset
+            | Control::AutoShutdown(_)
+            | Control::Name
+            | Control::Calibration(_)
+            | Control::Extrude(_) => Some(printer.state.machine_job_target()),
             Control::ClearPlate => Some(printer.state.plate_job_target()),
-            Control::Calibration(_) => Some(printer.state.machine_job_target()),
             _ => None,
         };
         let value = if choice.control == Control::Speed {
@@ -594,6 +599,7 @@ impl MakerCalcGpuiApp {
             value,
             job,
             z_range,
+            extrusion_limit,
             shutdown_step: matches!(choice.control, Control::AutoShutdown(true))
                 .then_some(printer.detail_state.machine.auto_shutdown_delay_step_s)
                 .flatten(),
@@ -631,6 +637,7 @@ impl MakerCalcGpuiApp {
                 && editor.z_range != z_offset_range(&printer.detail_state.machine)
             || editor.shutdown_step.is_some()
                 && editor.shutdown_step != printer.detail_state.machine.auto_shutdown_delay_step_s
+            || matches!(editor.choice.control, Control::Extrude(id) if editor.extrusion_limit != extrusion_device(printer, id).and_then(|device| device.extrusion_limit_mm))
             || editor.choice.control == Control::Name
                 && editor.choice.value.as_deref().unwrap_or_default()
                     != printer
@@ -788,15 +795,21 @@ impl MakerCalcGpuiApp {
             .as_ref()
             .and_then(|result| result.as_ref().err())
             .map(|&error| {
-                let hint = matches!(editor.choice.control, Control::Calibration(_))
-                    .then(|| self.printers.get(&editor.printer))
-                    .flatten()
-                    .and_then(|printer| calibration_block_message(printer, error));
+                let hint = self.printers.get(&editor.printer).and_then(|printer| {
+                    physical_block_message(printer, editor.choice.control, error)
+                });
                 hint.unwrap_or_else(|| editor_message(error))
             })
             .or(editor.error);
         let speed = editor.choice.control == Control::Speed;
         let clear_plate = editor.choice.control == Control::ClearPlate;
+        let extrusion_hint = editor.extrusion_limit.map(|limit| {
+            t!(
+                "printers.controls.extrude_range",
+                max = localized_decimal(&limit.to_string())
+            )
+            .into_owned()
+        });
         let calibration_hint = match editor.choice.control {
             Control::Calibration(CalibrationKind::BedLeveling) => {
                 Some(t!("printers.controls.level_bed_confirm").into_owned())
@@ -840,9 +853,13 @@ impl MakerCalcGpuiApp {
                         input.id("machine-auto-shutdown-delay")
                     })
                     .when(printer_name, |input| input.id("machine-printer-name"))
+                    .when(editor.extrusion_limit.is_some(), |input| {
+                        input.id("machine-extrusion-length")
+                    })
                     .aria_label(if auto_shutdown {
                         t!("printers.controls.auto_shutdown_seconds").into_owned()
-                    } else if z_range.is_some() || printer_name {
+                    } else if z_range.is_some() || printer_name || editor.extrusion_limit.is_some()
+                    {
                         editor.choice.label.clone()
                     } else {
                         t!("printers.controls.value").into_owned()
@@ -886,6 +903,7 @@ impl MakerCalcGpuiApp {
                                     z_range
                                         .or(shutdown_hint)
                                         .or(calibration_hint)
+                                        .or(extrusion_hint)
                                         .unwrap_or_else(|| {
                                             if clear_plate {
                                                 t!("printers.controls.clear_plate_confirm")
@@ -944,6 +962,8 @@ impl MakerCalcGpuiApp {
                                             )
                                         {
                                             editor.choice.label.clone()
+                                        } else if editor.extrusion_limit.is_some() {
+                                            t!("printers.controls.extrude_apply").into_owned()
                                         } else if printer_name {
                                             t!("printers.controls.name_apply").into_owned()
                                         } else {

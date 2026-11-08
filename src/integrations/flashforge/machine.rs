@@ -732,6 +732,13 @@ impl Projection {
                 .collect();
             device.output_control_range_pct =
                 device.actions.contains(&K::SetFanPower).then_some([0, 100]);
+            if device.actions.contains(&K::ExtrudeFilament) {
+                device.extrusion_limit_mm = Some(crate::shared::control::MAX_EXTRUSION_MM);
+                device.extrusion_requires_material_idle = true;
+                device.can_extrude = device
+                    .temperature_c
+                    .map(|temperature| (170.0..=300.0).contains(&temperature));
+            }
         }
         if let Some(version) = info.device.firmware_version.clone() {
             info.software.push(crate::shared::machine::SoftwareVersion {
@@ -1013,13 +1020,15 @@ impl Projection {
                 length_mm,
             } => {
                 self.target(*nozzle_id, &Target::Nozzle)?;
-                let hot = detail
+                detail
+                    .machine
+                    .idle_setting_availability(state.telemetry.print_state)?;
+                let permitted = detail
                     .devices
                     .iter()
                     .find(|d| d.id == *nozzle_id)
-                    .and_then(|d| d.temperature_c)
-                    .is_some_and(|c| (170.0..=300.0).contains(&c));
-                if !hot {
+                    .is_some_and(|d| d.can_extrude == Some(true));
+                if !permitted {
                     return Err(ControlError::InvalidState);
                 }
                 ("extrudeCtrl_cmd", json!({"axis":"e","delta":length_mm}))

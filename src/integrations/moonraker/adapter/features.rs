@@ -96,7 +96,7 @@ impl Projection {
         let manual_fan =
             self.command_available("M106", source) && self.command_available("M107", source);
         let generic_fan = self.command_available("SET_FAN_SPEED", source);
-        let extrude = self.command_available("G1", source);
+        let extrude = control::extrusion_supported(source);
         let pressure = self.command_available("SET_PRESSURE_ADVANCE", source);
         for device in &mut self.state.devices {
             device.actions.clear();
@@ -118,8 +118,16 @@ impl Projection {
                 // Automatic heater/controller fans remain read-only.
                 // Enabling PWM is not an independent on/off switch.
                 if device.kind == model::DeviceKind::Nozzle {
-                    if extrude {
+                    if extrude
+                        && device
+                            .readings
+                            .extrusion
+                            .as_ref()
+                            .and_then(|state| state.active)
+                            == Some(true)
+                    {
                         device.actions.push(K::ExtrudeFilament);
+                        device.extrusion_limit_mm = control::extrusion_limit_mm(source, name);
                     }
                     if pressure {
                         device.actions.push(K::SetPressureAdvance);

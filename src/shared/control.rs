@@ -175,6 +175,8 @@ pub(crate) enum MachineAction {
     },
 }
 
+pub(crate) const MAX_EXTRUSION_MM: f64 = 100.0;
+
 impl MachineAction {
     pub(crate) fn kind(&self) -> MachineActionKind {
         use MachineActionKind as K;
@@ -233,7 +235,7 @@ impl MachineAction {
                     && speed_mm_s.is_none_or(|speed| (5..=75).contains(&speed))
             }
             Self::ExtrudeFilament { length_mm, .. } => {
-                length_mm.is_finite() && *length_mm != 0.0 && length_mm.abs() <= 100.0
+                length_mm.is_finite() && *length_mm != 0.0 && length_mm.abs() <= MAX_EXTRUSION_MM
             }
             Self::SetPrintSpeedOverride { percent } => (1..=1000).contains(percent),
             Self::SetFlowOverride { percent } => (1..=1000).contains(percent),

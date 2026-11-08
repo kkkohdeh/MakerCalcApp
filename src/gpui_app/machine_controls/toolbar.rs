@@ -1,9 +1,10 @@
-use super::{Control, availability, calibration_block_message, choices};
+use super::{Control, availability, choices, extrusion_device, motion};
 use crate::gpui_app::{
     MakerCalcGpuiApp, PrinterEntry, bay, components::button::Button, icons, materials,
 };
 use crate::i18n::t;
 use crate::shared::control::{CalibrationKind, ControlError};
+use crate::shared::machine::CalibrationReadiness;
 use crate::state::LocalPrinterId;
 use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -20,6 +21,63 @@ const HEADER_CONTROLS: [Control; 7] = [
     Control::Calibration(CalibrationKind::BedLeveling),
     Control::Calibration(CalibrationKind::VibrationCompensation),
 ];
+
+const EXTRUSION_ID: &str = "printer-extrude";
+
+pub(super) fn physical_block_message(
+    printer: &PrinterEntry,
+    control: Control,
+    error: ControlError,
+) -> Option<String> {
+    if let Control::Extrude(id) = control
+        && extrusion_device(printer, id)?.extrusion_requires_material_idle
+        && error == ControlError::Busy
+        && printer.detail_state.machine.material_motion_idle == Some(false)
+    {
+        return Some(t!("printers.controls.extrude_material_busy").into_owned());
+    }
+    if error != ControlError::InvalidState
+        || !matches!(control, Control::Calibration(_) | Control::Extrude(_))
+    {
+        return None;
+    }
+    if let Err(key) = motion::availability(printer, false) {
+        return Some(t!(key).into_owned());
+    }
+    let key = if let Control::Extrude(id) = control {
+        let device = extrusion_device(printer, id)?;
+        if device.extrusion_requires_material_idle {
+            if printer.state.telemetry.print_state != crate::shared::printer::PrintStatus::Idle {
+                return Some(t!("printers.materials.controls.not_idle").into_owned());
+            }
+            if printer.detail_state.machine.material_motion_idle.is_none() {
+                return Some(t!("printers.controls.clear_plate_material_unknown").into_owned());
+            }
+        }
+        match device.extrusion_limit_mm {
+            None => "printers.controls.extrude_limit_unknown",
+            Some(0.) => "printers.controls.extrude_disabled",
+            _ => "printers.controls.extrude_not_ready",
+        }
+    } else {
+        match printer.detail_state.machine.calibration_readiness {
+            Some(CalibrationReadiness::NeedsHoming) => {
+                "printers.controls.calibration_home_required"
+            }
+            None | Some(CalibrationReadiness::NotReady) => "printers.controls.calibration_wait",
+            _ => return None,
+        }
+    };
+    Some(t!(key).into_owned())
+}
+
+pub(super) fn localized_decimal(value: &str) -> String {
+    if rust_i18n::locale().starts_with("es") {
+        value.replace('.', ",")
+    } else {
+        value.to_owned()
+    }
+}
 
 struct HeaderAction {
     id: &'static str,
@@ -41,6 +99,7 @@ impl Control {
             Self::Calibration(CalibrationKind::VibrationCompensation) => {
                 ("printer-calibrate-vibration", icons::SVG_VIBRATION, None)
             }
+            Self::Extrude(_) => (EXTRUSION_ID, icons::SVG_EXTRUDE, None),
             _ => return None,
         };
         Some(HeaderAction { id, svg, badge })
@@ -59,14 +118,18 @@ impl MakerCalcGpuiApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
-        let focus_handles = HEADER_CONTROLS.map(|control| {
-            let name = control.header_id().expect("toolbar control has an ID");
-            let focus = window
-                .use_keyed_state((name, id.0), cx, |_, cx| cx.focus_handle())
-                .read(cx)
-                .clone();
-            (name, focus)
-        });
+        let focus_handles = HEADER_CONTROLS
+            .into_iter()
+            .filter_map(Control::header_id)
+            .chain([EXTRUSION_ID])
+            .map(|name| {
+                let focus = window
+                    .use_keyed_state((name, id.0), cx, |_, cx| cx.focus_handle())
+                    .read(cx)
+                    .clone();
+                (name, focus)
+            })
+            .collect::<Vec<_>>();
         let status = printer.state.telemetry.print_state;
         let machine = &printer.detail_state.machine;
         choices(printer)
@@ -76,8 +139,13 @@ impl MakerCalcGpuiApp {
                 let (_, focus) = focus_handles.iter().find(|(name, _)| *name == header.id)?;
                 let blocked = availability(printer, choice.control, pending).err();
                 let hint = match blocked {
-                    Some(error) if matches!(choice.control, Control::Calibration(_)) => {
-                        calibration_block_message(printer, error)
+                    Some(error)
+                        if matches!(
+                            choice.control,
+                            Control::Calibration(_) | Control::Extrude(_)
+                        ) =>
+                    {
+                        physical_block_message(printer, choice.control, error)
                             .unwrap_or_else(|| materials::result_message(error))
                     }
                     Some(ControlError::InvalidState)

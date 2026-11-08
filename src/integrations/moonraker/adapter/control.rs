@@ -106,6 +106,38 @@ pub(super) fn manual_move_max_speed_mm_s(source: &raw::DetailState) -> Option<[f
     limits.iter().all(|limit| *limit >= 5.).then_some(limits)
 }
 
+const EXTRUSION_COMMANDS: [&str; 6] = [
+    "SAVE_GCODE_STATE",
+    "M83",
+    "M220",
+    "M221",
+    "G1",
+    "RESTORE_GCODE_STATE",
+];
+
+pub(super) fn extrusion_supported(source: &raw::DetailState) -> bool {
+    EXTRUSION_COMMANDS
+        .iter()
+        .all(|command| need_command(source, command).is_ok())
+}
+
+pub(super) fn extrusion_limit_mm(source: &raw::DetailState, name: &str) -> Option<f64> {
+    let section = source.sections.get(CONFIGURATION)?;
+    let settings = section
+        .data
+        .as_ref()?
+        .pointer("/status/configfile/settings")?
+        .get(name)?;
+    if section.status != raw::SectionStatus::Ready || !settings.is_object() {
+        return None;
+    }
+    let limit = match settings.get("max_extrude_only_distance") {
+        Some(value) => value.as_f64()?,
+        None => 50.0,
+    };
+    (limit.is_finite() && limit >= 0.0).then(|| limit.min(crate::shared::control::MAX_EXTRUSION_MM))
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct PreparedControl {
     action: A,
@@ -435,14 +467,7 @@ pub(in crate::integrations::moonraker) fn build_request(
         }
         A::ExtrudeFilament { length_mm, .. } => {
             require_idle()?;
-            for c in [
-                "SAVE_GCODE_STATE",
-                "M83",
-                "M220",
-                "M221",
-                "G1",
-                "RESTORE_GCODE_STATE",
-            ] {
+            for c in EXTRUSION_COMMANDS {
                 need_command(source, c)?;
             }
             let name = target_device(control)?;
@@ -455,6 +480,10 @@ pub(in crate::integrations::moonraker) fn build_request(
                 || nozzle.get("can_extrude").and_then(Value::as_bool) != Some(true)
             {
                 return Err(E::InvalidState);
+            }
+            let limit = extrusion_limit_mm(source, name).ok_or(E::InvalidState)?;
+            if length_mm.abs() > limit {
+                return Err(E::InvalidData);
             }
             script = Some(format!(
                 "SAVE_GCODE_STATE NAME=MAKERCALC_CONTROL\nM83\nM220 S100\nM221 S100\nG1 E{length_mm} F60\nRESTORE_GCODE_STATE NAME=MAKERCALC_CONTROL"
