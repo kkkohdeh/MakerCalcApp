@@ -148,6 +148,7 @@ impl MakerCalcGpuiApp {
                                     id,
                                     printer,
                                     machine_controls.is_pending(id),
+                                    window,
                                     cx,
                                 ))
                             })

@@ -8,6 +8,7 @@ use crate::i18n::t;
 use crate::shared::control::{
     Axis, CalibrationKind, ControlError, ControlResult, MachineAction, MachineActionKind as K,
 };
+use crate::shared::machine::MachineInfo;
 use crate::shared::workspace::ResourceId;
 use crate::state::{LanConnection, LocalPrinterId, MachineJobTarget};
 use gpui_kit::base::{FocusTrapElement as _, StyledExt as _, TestSupportExt as _};
@@ -50,6 +51,7 @@ impl Control {
     fn header_id(self) -> Option<&'static str> {
         match self {
             Self::Speed => Some("print-speed-override"),
+            Self::ZOffset => Some("printer-z-offset"),
             _ => None,
         }
     }
@@ -77,12 +79,12 @@ fn choices(printer: &PrinterEntry) -> Vec<Choice> {
     if speed_range(printer).is_some() {
         add("speed", K::SetPrintSpeedOverride, Control::Speed, None);
     }
-    if machine.z_offset_range_mm.is_some() {
+    if z_offset_range(machine).is_some() {
         add(
             "z_offset",
             K::SetZOffset,
             Control::ZOffset,
-            Some(machine.z_offset_mm.unwrap_or(0.0).to_string()),
+            Some(z_offset_draft(machine)),
         );
     }
     add("home", K::HomeAxes, Control::Home, None);
@@ -229,6 +231,19 @@ fn observed_speed(printer: &PrinterEntry) -> Option<f64> {
         .filter(|value| value.is_finite())
 }
 
+fn z_offset_range(machine: &MachineInfo) -> Option<[f64; 2]> {
+    machine.z_offset_range_mm.filter(|[min, max]| {
+        machine.actions.contains(&K::SetZOffset) && min.is_finite() && max.is_finite() && min < max
+    })
+}
+
+fn z_offset_draft(machine: &MachineInfo) -> String {
+    machine
+        .z_offset_mm
+        .map(|value| localized_decimal(&value.to_string()))
+        .unwrap_or_default()
+}
+
 fn availability(
     printer: &PrinterEntry,
     control: Control,
@@ -252,7 +267,7 @@ fn availability(
     if control.requires_idle() {
         motion::availability(printer, false).map_err(|_| ControlError::InvalidState)?;
     }
-    if control == Control::Speed
+    if matches!(control, Control::Speed | Control::ZOffset)
         && !printer
             .detail_state
             .machine
@@ -315,7 +330,11 @@ fn action(
             MachineAction::SetPrintSpeedOverride { percent }
         }
         Control::ZOffset => {
-            let offset_mm = number()?;
+            let offset_mm = value
+                .trim()
+                .replace(',', ".")
+                .parse::<f64>()
+                .map_err(|_| ControlError::InvalidData)?;
             let [min, max] = machine.z_offset_range_mm.ok_or(ControlError::Unsupported)?;
             if !(min..=max).contains(&offset_mm) {
                 return Err(ControlError::InvalidData);
@@ -398,6 +417,8 @@ struct Editor {
     epoch: u64,
     choice: Choice,
     value: EditorValue,
+    job: Option<MachineJobTarget>,
+    z_range: Option<[f64; 2]>,
     focus: FocusHandle,
     opener: Option<FocusHandle>,
     error: Option<String>,
@@ -410,8 +431,15 @@ enum EditorValue {
     Speed {
         slider: Entity<SliderState>,
         range: [u16; 2],
-        job: MachineJobTarget,
     },
+}
+
+fn localized_decimal(value: &str) -> String {
+    if rust_i18n::locale().starts_with("es") {
+        value.replace('.', ",")
+    } else {
+        value.to_owned()
+    }
 }
 
 fn speed_field(
@@ -427,11 +455,7 @@ fn speed_field(
         |value| {
             let decimal = format!("{value:.2}");
             let value = decimal.trim_end_matches('0').trim_end_matches('.');
-            let value = if rust_i18n::locale().starts_with("es") {
-                value.replace('.', ",")
-            } else {
-                value.to_owned()
-            };
+            let value = localized_decimal(value);
             t!("printers.controls.speed_observed", value = value).into_owned()
         },
     );
@@ -472,12 +496,34 @@ impl MakerCalcGpuiApp {
         id: LocalPrinterId,
         printer: &PrinterEntry,
         pending: bool,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
+        let header_focus = |name: &'static str, window: &mut Window, cx: &mut Context<Self>| {
+            window
+                .use_keyed_state((name, id.0), cx, |_, cx| cx.focus_handle())
+                .read(cx)
+                .clone()
+        };
+        let speed_focus = header_focus("print-speed-override-focus", window, cx);
+        let z_focus = header_focus("printer-z-offset-focus", window, cx);
         choices(printer)
             .into_iter()
             .filter_map(|choice| {
                 let control_id = choice.control.header_id()?;
+                let (icon, badge, focus) = match choice.control {
+                    Control::Speed => (
+                        Icon::default().data(super::bay::SPEED_ICON),
+                        "%",
+                        &speed_focus,
+                    ),
+                    Control::ZOffset => (
+                        Icon::default().data(super::icons::SVG_Z_OFFSET),
+                        "Z",
+                        &z_focus,
+                    ),
+                    _ => return None,
+                };
                 let blocked = availability(printer, choice.control, pending).err();
                 let machine = &printer.detail_state.machine;
                 let hint = match blocked {
@@ -486,25 +532,26 @@ impl MakerCalcGpuiApp {
                             && !machine
                                 .allows_print_adjustment(printer.state.telemetry.print_state) =>
                     {
-                        t!("printers.controls.speed_active_job").into_owned()
+                        t!("printers.controls.adjustment_active_job").into_owned()
                     }
                     Some(error) => super::materials::result_message(error),
                     None => choice.label.clone(),
                 };
                 Some(
                     Button::new(control_id)
+                        .focus_handle(focus)
                         .ghost()
                         .small()
                         .w(px(30.))
                         .px_0()
-                        .icon(Icon::default().data(super::bay::SPEED_ICON))
+                        .icon(icon)
                         .child(
                             div()
                                 .absolute()
                                 .right(px(3.))
                                 .top(px(1.))
                                 .text_size(px(9.))
-                                .child("%"),
+                                .child(badge),
                         )
                         .accessibility_label(choice.label.clone())
                         .tooltip(hint)
@@ -559,7 +606,7 @@ impl MakerCalcGpuiApp {
     fn open_machine_editor(
         &mut self,
         id: LocalPrinterId,
-        choice: Choice,
+        mut choice: Choice,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -577,6 +624,18 @@ impl MakerCalcGpuiApp {
         {
             return;
         }
+        let z_range = if choice.control == Control::ZOffset {
+            let machine = &printer.detail_state.machine;
+            let Some(range) = z_offset_range(machine) else {
+                return;
+            };
+            choice.value = Some(z_offset_draft(machine));
+            Some(range)
+        } else {
+            None
+        };
+        let job = matches!(choice.control, Control::Speed | Control::ZOffset)
+            .then(|| printer.state.machine_job_target());
         let value = if choice.control == Control::Speed {
             let Some(range @ [min, max]) = speed_range(printer) else {
                 return;
@@ -592,11 +651,7 @@ impl MakerCalcGpuiApp {
                     .default_value(initial)
             });
             cx.observe(&slider, |_, _, cx| cx.notify()).detach();
-            EditorValue::Speed {
-                slider,
-                range,
-                job: printer.state.machine_job_target(),
-            }
+            EditorValue::Speed { slider, range }
         } else if let Some(value) = &choice.value {
             EditorValue::Input(
                 cx.new(|cx| InputState::new(window, cx).default_value(value.clone())),
@@ -609,6 +664,8 @@ impl MakerCalcGpuiApp {
             session: printer.session_generation,
             epoch: printer.state.connection_epoch,
             value,
+            job,
+            z_range,
             choice,
             focus: cx.focus_handle(),
             opener: window.focused(cx),
@@ -635,8 +692,12 @@ impl MakerCalcGpuiApp {
         {
             return Err(ControlError::Unsupported);
         }
-        if let EditorValue::Speed { range, job, .. } = &editor.value
-            && (Some(*range) != speed_range(printer) || *job != printer.state.machine_job_target())
+        if editor
+            .job
+            .is_some_and(|job| job != printer.state.machine_job_target())
+            || editor.z_range.is_some()
+                && editor.z_range != z_offset_range(&printer.detail_state.machine)
+            || matches!(&editor.value, EditorValue::Speed { range, .. } if Some(*range) != speed_range(printer))
         {
             return Err(ControlError::StaleResource);
         }
@@ -660,13 +721,9 @@ impl MakerCalcGpuiApp {
                 EditorValue::Speed { slider, .. } => slider.read(cx).value().end().to_string(),
             };
             let action = action(printer, editor.choice.control, &value)?;
-            let job = match editor.value {
-                EditorValue::Speed { job, .. } => Some(job),
-                _ => None,
-            };
             printer
                 .operation
-                .machine_action_for_job(editor.epoch, job, action.clone())
+                .machine_action_for_job(editor.epoch, editor.job, action.clone())
                 .map(|receiver| (action, receiver))
         })();
         let (requested, receiver) = match result {
@@ -777,28 +834,50 @@ impl MakerCalcGpuiApp {
         };
         self.machine_controls.rendered = true;
         let editor = display.value;
-        let speed_check = matches!(editor.value, EditorValue::Speed { .. })
+        let live_check = editor
+            .job
+            .is_some()
             .then(|| self.machine_editor_printer(&editor));
-        let speed_blocked = speed_check.as_ref().is_some_and(Result::is_err);
-        let disabled = display.closing || speed_blocked;
-        let error = speed_check
+        let disabled = display.closing || live_check.as_ref().is_some_and(Result::is_err);
+        let error = live_check
             .as_ref()
             .and_then(|result| result.as_ref().err())
             .map(|&error| super::materials::result_message(error))
             .or(editor.error);
-        let speed = speed_check.is_some();
+        let speed = editor.choice.control == Control::Speed;
+        let z_unreported = editor.z_range.is_some()
+            && live_check.as_ref().is_some_and(|result| {
+                result
+                    .as_ref()
+                    .is_ok_and(|printer| printer.detail_state.machine.z_offset_mm.is_none())
+            });
+        let z_range = editor.z_range.map(|[min, max]| {
+            t!(
+                "printers.controls.z_offset_range",
+                min = localized_decimal(&min.to_string()),
+                max = localized_decimal(&max.to_string())
+            )
+            .into_owned()
+        });
         let field = match &editor.value {
             EditorValue::Confirm => None,
             EditorValue::Input(input) => Some(
                 Input::new(input)
-                    .aria_label(t!("printers.controls.value").into_owned())
-                    .disabled(display.closing)
+                    .when(z_range.is_some(), |input| {
+                        input.id("machine-z-offset-input")
+                    })
+                    .aria_label(if z_range.is_some() {
+                        editor.choice.label.clone()
+                    } else {
+                        t!("printers.controls.value").into_owned()
+                    })
+                    .disabled(disabled)
                     .into_any_element(),
             ),
             EditorValue::Speed { slider, range, .. } => Some(speed_field(
                 slider,
                 *range,
-                speed_check.and_then(Result::ok).and_then(observed_speed),
+                live_check.and_then(Result::ok).and_then(observed_speed),
                 &editor.choice.label,
                 disabled,
                 cx,
@@ -826,11 +905,18 @@ impl MakerCalcGpuiApp {
                                 .child(dialog::title().child(editor.choice.label.clone())),
                         )
                         .when(!speed, |dialog| {
+                            dialog.child(div().text_sm().whitespace_normal().child(
+                                z_range.unwrap_or_else(|| {
+                                    t!("printers.controls.confirm").into_owned()
+                                }),
+                            ))
+                        })
+                        .when(z_unreported, |dialog| {
                             dialog.child(
                                 div()
                                     .text_sm()
-                                    .whitespace_normal()
-                                    .child(t!("printers.controls.confirm")),
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(t!("printers.controls.z_offset_unreported")),
                             )
                         })
                         .children(field)
@@ -853,6 +939,8 @@ impl MakerCalcGpuiApp {
                                     Button::new("machine-editor-submit")
                                         .label(if speed {
                                             t!("printers.controls.speed_apply").into_owned()
+                                        } else if editor.choice.control == Control::ZOffset {
+                                            t!("printers.controls.z_offset_apply").into_owned()
                                         } else {
                                             t!("printers.controls.send").into_owned()
                                         })

@@ -2,7 +2,9 @@
 use super::*;
 use crate::shared::control::MachineActionKind as K;
 use crate::shared::gcode::{GcodeFacts, GcodeMaterialChannel};
-use crate::shared::machine::{FanRole, PrintObject, SoftwareRole, SoftwareVersion, StorageVolume};
+use crate::shared::machine::{
+    FanRole, MotionSource, PrintObject, SoftwareRole, SoftwareVersion, StorageVolume,
+};
 
 impl Projection {
     fn command_available(&self, name: &str, source: &raw::DetailState) -> bool {
@@ -41,6 +43,13 @@ impl Projection {
         self.state.machine.z_offset_range_mm = self
             .command_available("SET_GCODE_OFFSET", source)
             .then_some([-10.0, 10.0]);
+        self.state.machine.z_offset_mm = self
+            .state
+            .devices
+            .iter()
+            .find(|device| device.motion_source == Some(MotionSource::CommandInterpreter))
+            .and_then(|device| device.readings.motion.as_ref()?.origin_offset_mm)
+            .map(|[_, _, z]| z);
         self.state.machine.calibrations.clear();
         for (command, kind) in [
             (
