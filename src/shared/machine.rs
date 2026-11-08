@@ -2,7 +2,7 @@
 //! None means absent, invalid or not reported, never a fabricated zero.
 use serde::Serialize;
 
-use super::control::{CalibrationKind, MachineActionKind};
+use super::control::{CalibrationKind, ControlError, MachineActionKind};
 use super::printer::PrintStatus;
 use super::telemetry::FilamentSupplyTelemetry;
 use super::workspace::ResourceId;
@@ -170,6 +170,8 @@ pub(crate) struct MachineInfo {
     /// Absolute applied Z compensation in mm. Not homing origin or head height.
     pub(crate) z_offset_mm: Option<f64>,
     pub(crate) auto_shutdown_enabled: Option<bool>,
+    #[serde(skip)]
+    pub(crate) auto_shutdown_delay_step_s: Option<u32>,
     pub(crate) activity: Option<MachineActivity>,
     pub(crate) material_station_slots: Option<u8>,
     #[serde(skip)]
@@ -195,6 +197,28 @@ pub(crate) struct MachineInfo {
 }
 
 impl MachineInfo {
+    pub(crate) fn auto_shutdown_availability(
+        &self,
+        status: PrintStatus,
+        enabled: bool,
+    ) -> Result<(), ControlError> {
+        match self.material_motion_idle {
+            Some(true) => {}
+            Some(false) => return Err(ControlError::Busy),
+            None => return Err(ControlError::InvalidState),
+        }
+        if status != PrintStatus::Idle
+            || self.activity.is_some()
+            || self.auto_shutdown_enabled != Some(!enabled)
+        {
+            return Err(ControlError::InvalidState);
+        }
+        if enabled && self.auto_shutdown_delay_step_s.is_none_or(|step| step == 0) {
+            return Err(ControlError::Unsupported);
+        }
+        Ok(())
+    }
+
     pub(crate) fn allows_print_adjustment(&self, status: PrintStatus) -> bool {
         matches!(status, PrintStatus::Printing | PrintStatus::Paused)
             || (!self.print_adjustments_require_active_job

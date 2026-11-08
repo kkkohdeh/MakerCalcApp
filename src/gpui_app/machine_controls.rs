@@ -87,16 +87,16 @@ fn choices(printer: &PrinterEntry) -> Vec<Choice> {
         Control::ClearPlate,
         None,
     );
-    let disable_auto_shutdown = machine.auto_shutdown_enabled == Some(true);
+    let auto_shutdown_enabled = machine.auto_shutdown_enabled == Some(true);
     add(
-        if disable_auto_shutdown {
+        if auto_shutdown_enabled {
             "auto_shutdown_off"
         } else {
             "auto_shutdown_on"
         },
         K::SetAutoShutdown,
-        Control::AutoShutdown(!disable_auto_shutdown),
-        (!disable_auto_shutdown).then(|| "1800".into()),
+        Control::AutoShutdown(!auto_shutdown_enabled),
+        (!auto_shutdown_enabled).then(|| "1800".into()),
     );
     add(
         "name",
@@ -273,6 +273,15 @@ fn availability(
             None => return Err(ControlError::InvalidState),
         }
     }
+    if let Control::AutoShutdown(enabled) = control {
+        if printer.material_pending.is_some() {
+            return Err(ControlError::Busy);
+        }
+        printer
+            .detail_state
+            .machine
+            .auto_shutdown_availability(printer.state.telemetry.print_state, enabled)?;
+    }
     if control.requires_idle() {
         motion::availability(printer, false).map_err(|_| ControlError::InvalidState)?;
     }
@@ -388,10 +397,17 @@ fn action(
         Control::AutoShutdown(enabled) => MachineAction::SetAutoShutdown {
             enabled,
             delay_s: if enabled {
-                value
+                let seconds: u32 = value
                     .trim()
                     .parse()
-                    .map_err(|_| ControlError::InvalidData)?
+                    .map_err(|_| ControlError::InvalidData)?;
+                let step = machine
+                    .auto_shutdown_delay_step_s
+                    .ok_or(ControlError::Unsupported)?;
+                if step == 0 || !seconds.is_multiple_of(step) {
+                    return Err(ControlError::InvalidData);
+                }
+                seconds
             } else {
                 0
             },
@@ -428,6 +444,7 @@ struct Editor {
     value: EditorValue,
     job: Option<MachineJobTarget>,
     z_range: Option<[f64; 2]>,
+    shutdown_step: Option<u32>,
     focus: FocusHandle,
     opener: Option<FocusHandle>,
     error: Option<String>,
@@ -548,12 +565,12 @@ impl MakerCalcGpuiApp {
         let Some(printer) = self.printers.get(&id) else {
             return;
         };
-        if choice.control == Control::ClearPlate
-            && !printer
-                .detail_state
-                .machine
-                .actions
-                .contains(&K::ConfirmBuildPlateCleared)
+        if matches!(
+            choice.control,
+            Control::ClearPlate | Control::AutoShutdown(_)
+        ) && !choices(printer)
+            .iter()
+            .any(|current| current.control == choice.control)
         {
             return;
         }
@@ -579,7 +596,9 @@ impl MakerCalcGpuiApp {
             None
         };
         let job = match choice.control {
-            Control::Speed | Control::ZOffset => Some(printer.state.machine_job_target()),
+            Control::Speed | Control::ZOffset | Control::AutoShutdown(_) => {
+                Some(printer.state.machine_job_target())
+            }
             Control::ClearPlate => Some(printer.state.plate_job_target()),
             _ => None,
         };
@@ -613,6 +632,9 @@ impl MakerCalcGpuiApp {
             value,
             job,
             z_range,
+            shutdown_step: matches!(choice.control, Control::AutoShutdown(true))
+                .then_some(printer.detail_state.machine.auto_shutdown_delay_step_s)
+                .flatten(),
             choice,
             focus: cx.focus_handle(),
             opener: window.focused(cx),
@@ -645,6 +667,8 @@ impl MakerCalcGpuiApp {
             .is_some_and(|job| !printer.state.matches_machine_job_target(job))
             || editor.z_range.is_some()
                 && editor.z_range != z_offset_range(&printer.detail_state.machine)
+            || editor.shutdown_step.is_some()
+                && editor.shutdown_step != printer.detail_state.machine.auto_shutdown_delay_step_s
             || matches!(&editor.value, EditorValue::Speed { range, .. } if Some(*range) != speed_range(printer))
         {
             return Err(ControlError::StaleResource);
@@ -782,6 +806,7 @@ impl MakerCalcGpuiApp {
         };
         self.machine_controls.rendered = true;
         let editor = display.value;
+        let auto_shutdown = matches!(editor.choice.control, Control::AutoShutdown(_));
         let live_check = editor
             .job
             .is_some()
@@ -794,6 +819,15 @@ impl MakerCalcGpuiApp {
             .or(editor.error);
         let speed = editor.choice.control == Control::Speed;
         let clear_plate = editor.choice.control == Control::ClearPlate;
+        let shutdown_hint = match editor.choice.control {
+            Control::AutoShutdown(true) => editor
+                .shutdown_step
+                .map(|step| t!("printers.controls.auto_shutdown_delay", step = step).into_owned()),
+            Control::AutoShutdown(false) => {
+                Some(t!("printers.controls.auto_shutdown_confirm_off").into_owned())
+            }
+            _ => None,
+        };
         let z_unreported = editor.z_range.is_some()
             && live_check.as_ref().is_some_and(|result| {
                 result
@@ -815,7 +849,12 @@ impl MakerCalcGpuiApp {
                     .when(z_range.is_some(), |input| {
                         input.id("machine-z-offset-input")
                     })
-                    .aria_label(if z_range.is_some() {
+                    .when(auto_shutdown, |input| {
+                        input.id("machine-auto-shutdown-delay")
+                    })
+                    .aria_label(if auto_shutdown {
+                        t!("printers.controls.auto_shutdown_seconds").into_owned()
+                    } else if z_range.is_some() {
                         editor.choice.label.clone()
                     } else {
                         t!("printers.controls.value").into_owned()
@@ -855,7 +894,7 @@ impl MakerCalcGpuiApp {
                         )
                         .when(!speed, |dialog| {
                             dialog.child(div().text_sm().whitespace_normal().child(
-                                z_range.unwrap_or_else(|| {
+                                z_range.or(shutdown_hint).unwrap_or_else(|| {
                                     if clear_plate {
                                         t!("printers.controls.clear_plate_confirm").into_owned()
                                     } else {
@@ -896,6 +935,8 @@ impl MakerCalcGpuiApp {
                                             t!("printers.controls.z_offset_apply").into_owned()
                                         } else if clear_plate {
                                             t!("printers.controls.clear_plate").into_owned()
+                                        } else if auto_shutdown {
+                                            editor.choice.label.clone()
                                         } else {
                                             t!("printers.controls.send").into_owned()
                                         })

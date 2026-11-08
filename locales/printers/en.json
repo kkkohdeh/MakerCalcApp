@@ -637,8 +637,12 @@
       "confirm": "Confirm this request. Ensure the printer and its surroundings are clear. Acknowledgement does not confirm physical completion.",
       "value": "Requested value",
       "send": "Send request",
-      "auto_shutdown_on": "Enable auto shutdown (delay in seconds)",
-      "auto_shutdown_off": "Disable auto shutdown"
+      "auto_shutdown_on": "Enable auto shutdown",
+      "auto_shutdown_off": "Disable auto shutdown",
+      "auto_shutdown_delay": "After a print finishes, the printer waits this long before turning off. Enter 60–86400 seconds in increments of %{step}.",
+      "auto_shutdown_seconds": "Shutdown delay (seconds)",
+      "auto_shutdown_confirm_off": "Keep the printer on after a print finishes.",
+      "auto_shutdown_unknown": "Waiting for the printer to report the automatic shutdown setting."
     },
     "motion": {
       "title": "Movement",

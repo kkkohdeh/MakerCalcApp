@@ -637,8 +637,12 @@
       "confirm": "Confirma esta solicitud. Comprueba que la impresora y su entorno estén despejados. La aceptación no confirma que la operación física haya terminado.",
       "value": "Valor solicitado",
       "send": "Enviar solicitud",
-      "auto_shutdown_on": "Activar apagado automático (demora en segundos)",
-      "auto_shutdown_off": "Desactivar apagado automático"
+      "auto_shutdown_on": "Activar apagado automático",
+      "auto_shutdown_off": "Desactivar apagado automático",
+      "auto_shutdown_delay": "Al terminar la impresión, la impresora espera esta demora antes de apagarse. Ingresa entre 60 y 86400 segundos, en incrementos de %{step}.",
+      "auto_shutdown_seconds": "Demora de apagado (segundos)",
+      "auto_shutdown_confirm_off": "Mantén la impresora encendida después de terminar la impresión.",
+      "auto_shutdown_unknown": "Esperando que la impresora informe el ajuste de apagado automático."
     },
     "motion": {
       "title": "Movimiento",

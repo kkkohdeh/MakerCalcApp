@@ -339,6 +339,7 @@ impl Projection {
                 .z_axis_compensation
                 .filter(|v| v.is_finite() && (-5.0..=5.0).contains(v)),
             auto_shutdown_enabled: switch(extra.auto_shutdown.as_deref()),
+            auto_shutdown_delay_step_s: known.then_some(60),
             activity: activity(detail.status.as_deref()),
             material_station_slots: detail
                 .matl_station_info
@@ -945,7 +946,6 @@ impl Projection {
                 | MachineAction::MoveAxisRelative { .. }
                 | MachineAction::ExtrudeFilament { .. }
                 | MachineAction::RunCalibration { .. }
-                | MachineAction::SetAutoShutdown { .. }
                 | MachineAction::SetDeviceName { .. }
         );
         if needs_idle && (!idle || material_busy) {
@@ -1098,6 +1098,12 @@ impl Projection {
                 json!({"levelingDetection":open(*kind == CalibrationKind::BedLeveling),"vibrationCompensation":open(*kind == CalibrationKind::VibrationCompensation)}),
             ),
             MachineAction::SetAutoShutdown { enabled, delay_s } => {
+                detail
+                    .machine
+                    .auto_shutdown_availability(state.telemetry.print_state, *enabled)?;
+                if super::map_status(self.status.as_deref()) != PrintStatus::Idle {
+                    return Err(ControlError::InvalidState);
+                }
                 let minutes = if *enabled {
                     if !delay_s.is_multiple_of(60) {
                         return Err(ControlError::InvalidData);

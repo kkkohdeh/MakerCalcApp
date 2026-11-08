@@ -11,7 +11,12 @@ use gpui_kit::{
     AnyElement, Context, IntoElement, ParentElement as _, Styled as _, Window, div, px,
 };
 
-const HEADER_CONTROLS: [Control; 3] = [Control::Speed, Control::ZOffset, Control::ClearPlate];
+const HEADER_CONTROLS: [Control; 4] = [
+    Control::Speed,
+    Control::ZOffset,
+    Control::ClearPlate,
+    Control::AutoShutdown(true),
+];
 
 struct HeaderAction {
     id: &'static str,
@@ -25,6 +30,7 @@ impl Control {
             Self::Speed => ("print-speed-override", bay::SPEED_ICON, Some("%")),
             Self::ZOffset => ("printer-z-offset", icons::SVG_Z_OFFSET, Some("Z")),
             Self::ClearPlate => ("printer-clear-plate", icons::SVG_CLEAR_PLATE, None),
+            Self::AutoShutdown(_) => ("printer-auto-shutdown", icons::SVG_AUTO_SHUTDOWN, None),
             _ => return None,
         };
         Some(HeaderAction { id, svg, badge })
@@ -49,7 +55,7 @@ impl MakerCalcGpuiApp {
                 .use_keyed_state((name, id.0), cx, |_, cx| cx.focus_handle())
                 .read(cx)
                 .clone();
-            (control, focus)
+            (name, focus)
         });
         let status = printer.state.telemetry.print_state;
         let machine = &printer.detail_state.machine;
@@ -57,9 +63,7 @@ impl MakerCalcGpuiApp {
             .into_iter()
             .filter_map(|choice| {
                 let header = choice.control.header()?;
-                let (_, focus) = focus_handles
-                    .iter()
-                    .find(|(control, _)| *control == choice.control)?;
+                let (_, focus) = focus_handles.iter().find(|(name, _)| *name == header.id)?;
                 let blocked = availability(printer, choice.control, pending).err();
                 let hint = match blocked {
                     Some(ControlError::InvalidState)
@@ -80,6 +84,24 @@ impl MakerCalcGpuiApp {
                             && !machine.allows_print_adjustment(status) =>
                     {
                         t!("printers.controls.adjustment_active_job").into_owned()
+                    }
+                    Some(ControlError::InvalidState)
+                        if matches!(choice.control, Control::AutoShutdown(_))
+                            && machine.auto_shutdown_enabled.is_none() =>
+                    {
+                        t!("printers.controls.auto_shutdown_unknown").into_owned()
+                    }
+                    Some(ControlError::InvalidState)
+                        if matches!(choice.control, Control::AutoShutdown(_))
+                            && status != crate::shared::printer::PrintStatus::Idle =>
+                    {
+                        t!("printers.motion.not_idle").into_owned()
+                    }
+                    Some(ControlError::InvalidState)
+                        if matches!(choice.control, Control::AutoShutdown(_))
+                            && machine.material_motion_idle.is_none() =>
+                    {
+                        t!("printers.controls.clear_plate_material_unknown").into_owned()
                     }
                     Some(error) => materials::result_message(error),
                     None => choice.label.clone(),
