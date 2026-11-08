@@ -1529,7 +1529,7 @@ async fn run_detail_handler(
                 let validation = {
                     let state = state_receiver.borrow();
                     if command.submitted_at.elapsed() > Duration::from_secs(5)
-                        || command.job_target.is_some_and(|job| job != state.machine_job_target()) {
+                        || command.job_target.as_ref().is_some_and(|job| !state.matches_machine_job_target(job)) {
                         Err(ControlError::StaleResource)
                     } else if last_operation_finished.is_some_and(|at| command.submitted_at <= at)
                         || operation_io.state.borrow().is_pending() || !operation_io.actions.is_empty() {

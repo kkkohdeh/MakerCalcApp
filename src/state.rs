@@ -42,10 +42,15 @@ pub(crate) struct PrinterState {
     pub(crate) telemetry: crate::shared::telemetry::PrinterTelemetry,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum MachineJobTarget {
     Active(u64),
     Inactive(u64),
+    Plate {
+        generation: u64,
+        status: PrintStatus,
+        filename: Option<String>,
+    },
 }
 
 impl PrinterState {
@@ -55,6 +60,36 @@ impl PrinterState {
                 MachineJobTarget::Active(self.job_generation)
             }
             _ => MachineJobTarget::Inactive(self.job_generation),
+        }
+    }
+
+    fn plate_job_filename(&self) -> Option<&str> {
+        self.snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.filename.as_deref())
+            .or_else(|| self.telemetry.last_job.as_ref()?.print_name.as_deref())
+    }
+
+    pub(crate) fn plate_job_target(&self) -> MachineJobTarget {
+        MachineJobTarget::Plate {
+            generation: self.job_generation,
+            status: self.telemetry.print_state,
+            filename: self.plate_job_filename().map(str::to_owned),
+        }
+    }
+
+    pub(crate) fn matches_machine_job_target(&self, target: &MachineJobTarget) -> bool {
+        match target {
+            MachineJobTarget::Plate {
+                generation,
+                status,
+                filename,
+            } => {
+                self.job_generation == *generation
+                    && self.telemetry.print_state == *status
+                    && self.plate_job_filename() == filename.as_deref()
+            }
+            _ => &self.machine_job_target() == target,
         }
     }
 }

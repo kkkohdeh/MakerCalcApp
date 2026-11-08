@@ -140,7 +140,8 @@ impl Projection {
         if command.connection_epoch != telemetry.connection_epoch
             || command
                 .job_target
-                .is_some_and(|job| job != telemetry.machine_job_target())
+                .as_ref()
+                .is_some_and(|job| !telemetry.matches_machine_job_target(job))
         {
             return Err(E::StaleResource);
         }
@@ -215,7 +216,7 @@ impl Projection {
             submitted_at: command.submitted_at,
             connection_epoch: telemetry.connection_epoch,
             job_generation: telemetry.job_generation,
-            job_target: command.job_target,
+            job_target: command.job_target.clone(),
             file_key: id.and_then(|id| file_estimates::FileKey::current(&self.state, id)),
             job: self.object_job.clone(),
         };
@@ -302,7 +303,8 @@ pub(in crate::integrations::moonraker) fn build_request(
         || telemetry.job_generation != control.job_generation
         || control
             .job_target
-            .is_some_and(|job| job != telemetry.machine_job_target())
+            .as_ref()
+            .is_some_and(|job| !telemetry.matches_machine_job_target(job))
     {
         return Err(E::StaleResource);
     }

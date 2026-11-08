@@ -172,6 +172,8 @@ pub(crate) struct MachineInfo {
     pub(crate) auto_shutdown_enabled: Option<bool>,
     pub(crate) activity: Option<MachineActivity>,
     pub(crate) material_station_slots: Option<u8>,
+    #[serde(skip)]
+    pub(crate) material_motion_idle: Option<bool>,
     /// True only when all reported access panels are closed; None means no confirmed sensor.
     pub(crate) enclosure_closed: Option<bool>,
     pub(crate) issues: Vec<PrinterIssue>,

@@ -23,6 +23,12 @@ pub(crate) enum PrintStatus {
     Error,
 }
 
+impl PrintStatus {
+    pub(crate) fn is_completed_or_cancelled(self) -> bool {
+        matches!(self, Self::Completed | Self::Cancelled)
+    }
+}
+
 /// Full observation after the adapter has merged source deltas and converted units.
 /// The state boundary validates and sanitizes it before publishing.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]

@@ -330,6 +330,8 @@ impl Projection {
         let mut info = MachineInfo {
             device,
             print_adjustments_require_active_job: known,
+            material_motion_idle: self
+                .material_motion_idle(poll.observation.material_station_available),
             motion_idle: poll
                 .motion_idle()
                 .map(|idle| idle && self.pending_load.is_none()),
@@ -866,6 +868,22 @@ impl Projection {
         state.devices.push(fan);
     }
 
+    fn material_action_in_progress(&self) -> bool {
+        matches!(self.station_action, Some(1..=3)) || matches!(self.independent_action, Some(1..=3))
+    }
+
+    fn material_motion_idle(&self, station: Option<bool>) -> Option<bool> {
+        let action = match station {
+            Some(true) => self.station_action,
+            Some(false) if self.product == Some(38) => self.independent_action,
+            None if self.product == Some(38) => None,
+            _ => return Some(!self.material_action_in_progress()),
+        };
+        action
+            .filter(|action| *action <= 3)
+            .map(|action| action == 0)
+    }
+
     /// Validate current physical state and translate one intention to one command.
     pub(super) fn validate_control(
         &self,
@@ -919,8 +937,7 @@ impl Projection {
                 .map_err(SupplyBlock::error)?;
         }
         let idle = matches!(self.status.as_deref(), Some("ready" | "idle"));
-        let material_busy = matches!(self.station_action, Some(1..=3))
-            || matches!(self.independent_action, Some(1..=3));
+        let material_busy = self.material_action_in_progress();
         let needs_idle = matches!(
             action,
             MachineAction::DisableMotors
@@ -1067,10 +1084,11 @@ impl Projection {
                 ("streamCtrl_cmd", json!({"action":open(*enabled)}))
             }
             MachineAction::ConfirmBuildPlateCleared => {
-                if !matches!(
-                    self.status.as_deref(),
-                    Some("completed" | "cancelled" | "cancel")
-                ) {
+                if !state.telemetry.print_state.is_completed_or_cancelled()
+                    || !super::map_status(self.status.as_deref()).is_completed_or_cancelled()
+                    || detail.machine.activity.is_some()
+                    || detail.machine.material_motion_idle != Some(true)
+                {
                     return Err(ControlError::InvalidState);
                 }
                 ("stateCtrl_cmd", json!({"action":"setClearPlatform"}))
