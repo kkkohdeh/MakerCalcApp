@@ -733,6 +733,7 @@ impl Projection {
                 .collect();
             device.output_control_range_pct =
                 device.actions.contains(&K::SetFanPower).then_some([0, 100]);
+            device.output_at_full_control_pct = device.output_control_range_pct.map(|_| 100.0);
             if device.actions.contains(&K::ExtrudeFilament) {
                 device.extrusion_limit_mm = Some(crate::shared::control::MAX_EXTRUSION_MM);
                 device.extrusion_requires_material_idle = true;

@@ -2,7 +2,13 @@ use super::{Control, PrinterEntry};
 use crate::shared::control::{Axis, ControlError, MachineAction};
 use crate::shared::workspace::{Device, ResourceId};
 
-pub(super) fn extrusion_device(printer: &PrinterEntry, id: ResourceId) -> Option<&Device> {
+pub(super) fn fan_range(printer: &PrinterEntry, id: ResourceId) -> Option<[u8; 2]> {
+    control_device(printer, id)?
+        .output_control_range_pct
+        .filter(|[min, max]| min <= max && *max <= 100)
+}
+
+pub(super) fn control_device(printer: &PrinterEntry, id: ResourceId) -> Option<&Device> {
     printer
         .detail_state
         .devices
@@ -53,13 +59,7 @@ pub(super) fn action(
         }
         Control::Fan(fan_id) => {
             let percent = integer()?;
-            let range = printer
-                .detail_state
-                .devices
-                .iter()
-                .find(|d| d.id == fan_id)
-                .and_then(|d| d.output_control_range_pct)
-                .ok_or(ControlError::Unsupported)?;
+            let range = fan_range(printer, fan_id).ok_or(ControlError::Unsupported)?;
             if !(u16::from(range[0])..=u16::from(range[1])).contains(&percent) {
                 return Err(ControlError::InvalidData);
             }
@@ -87,7 +87,7 @@ pub(super) fn action(
                 .replace(',', ".")
                 .parse::<f64>()
                 .map_err(|_| ControlError::InvalidData)?;
-            let limit = extrusion_device(printer, nozzle_id)
+            let limit = control_device(printer, nozzle_id)
                 .and_then(|device| device.extrusion_limit_mm)
                 .ok_or(ControlError::InvalidState)?;
             if length_mm.abs() > limit {

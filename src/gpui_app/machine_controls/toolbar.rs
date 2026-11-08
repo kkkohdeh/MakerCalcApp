@@ -1,4 +1,4 @@
-use super::{Control, availability, choices, extrusion_device, motion};
+use super::{Choice, Control, availability, choices, control_device, label, motion};
 use crate::gpui_app::{
     MakerCalcGpuiApp, PrinterEntry, bay, components::button::Button, icons, materials,
 };
@@ -6,6 +6,7 @@ use crate::i18n::t;
 use crate::shared::control::{CalibrationKind, ControlError};
 use crate::shared::machine::CalibrationReadiness;
 use crate::state::LocalPrinterId;
+use gpui_kit::component::menu::PopupMenuItem;
 use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -30,7 +31,7 @@ pub(super) fn physical_block_message(
     error: ControlError,
 ) -> Option<String> {
     if let Control::Extrude(id) = control
-        && extrusion_device(printer, id)?.extrusion_requires_material_idle
+        && control_device(printer, id)?.extrusion_requires_material_idle
         && error == ControlError::Busy
         && printer.detail_state.machine.material_motion_idle == Some(false)
     {
@@ -45,7 +46,7 @@ pub(super) fn physical_block_message(
         return Some(t!(key).into_owned());
     }
     let key = if let Control::Extrude(id) = control {
-        let device = extrusion_device(printer, id)?;
+        let device = control_device(printer, id)?;
         if device.extrusion_requires_material_idle {
             if printer.state.telemetry.print_state != crate::shared::printer::PrintStatus::Idle {
                 return Some(t!("printers.materials.controls.not_idle").into_owned());
@@ -132,7 +133,11 @@ impl MakerCalcGpuiApp {
             .collect::<Vec<_>>();
         let status = printer.state.telemetry.print_state;
         let machine = &printer.detail_state.machine;
-        choices(printer)
+        let (fans, other): (Vec<_>, Vec<_>) = choices(printer)
+            .into_iter()
+            .partition(|choice| matches!(choice.control, Control::Fan(_)));
+        let fan_control = fan_control(id, printer, fans, pending, window, cx);
+        other
             .into_iter()
             .filter_map(|choice| {
                 let header = choice.control.header()?;
@@ -216,6 +221,83 @@ impl MakerCalcGpuiApp {
                         .into_any_element(),
                 )
             })
+            .chain(fan_control)
             .collect()
     }
+}
+
+fn fan_control(
+    id: LocalPrinterId,
+    printer: &PrinterEntry,
+    fans: Vec<Choice>,
+    pending: bool,
+    window: &mut Window,
+    cx: &mut Context<MakerCalcGpuiApp>,
+) -> Option<AnyElement> {
+    let first = fans.first()?.clone();
+    let blocked = availability(printer, first.control, pending).err();
+    let name = if fans.len() == 1 {
+        first.label.clone()
+    } else {
+        label("fan_power")
+    };
+    let hint = match blocked {
+        Some(ControlError::InvalidState)
+            if printer
+                .detail_state
+                .machine
+                .print_adjustments_require_active_job
+                && !printer
+                    .detail_state
+                    .machine
+                    .allows_print_adjustment(printer.state.telemetry.print_state) =>
+        {
+            t!("printers.controls.adjustment_active_job").into_owned()
+        }
+        Some(error) => materials::result_message(error),
+        None => name.clone(),
+    };
+    let focus = window
+        .use_keyed_state(("printer-fan-power", id.0), cx, |_, cx| cx.focus_handle())
+        .read(cx)
+        .clone();
+    let button = Button::new("printer-fan-power")
+        .focus_handle(&focus)
+        .ghost()
+        .small()
+        .w(px(30.))
+        .px_0()
+        .icon(Icon::default().data(bay::FAN_ICON))
+        .accessibility_label(name)
+        .tooltip(hint)
+        .disabled(blocked.is_some());
+    if fans.len() == 1 {
+        return Some(
+            button
+                .popup_trigger()
+                .on_click(cx.listener(move |app, _, window, cx| {
+                    app.open_machine_editor(id, first.clone(), window, cx)
+                }))
+                .into_any_element(),
+        );
+    }
+    let app = cx.entity().downgrade();
+    Some(
+        button
+            .dropdown_menu(move |mut menu, _, _| {
+                for choice in &fans {
+                    let (choice, app, opener) = (choice.clone(), app.clone(), focus.clone());
+                    menu = menu.item(PopupMenuItem::new(choice.label.clone()).on_click(
+                        move |_, window, cx| {
+                            opener.focus(window, cx);
+                            let _ = app.update(cx, |app, cx| {
+                                app.open_machine_editor(id, choice.clone(), window, cx)
+                            });
+                        },
+                    ));
+                }
+                menu.scrollable(true)
+            })
+            .into_any_element(),
+    )
 }

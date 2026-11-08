@@ -28,6 +28,7 @@ use super::{MakerCalcGpuiApp, PrinterEntry};
 mod printer_card;
 mod web_icons;
 pub(super) use web_icons::SPEED as SPEED_ICON;
+pub(super) const FAN_ICON: &[u8] = web_icons::FAN;
 
 const BAY_CARD_WIDTH: f32 = 560.;
 

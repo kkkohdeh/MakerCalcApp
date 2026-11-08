@@ -284,6 +284,15 @@ fn identifier(name: &str) -> bool {
         && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
 }
 
+pub(super) fn generic_fan_name(object: &str) -> Option<&str> {
+    object.strip_prefix("fan_generic ").filter(|name| {
+        (1..=128).contains(&name.len())
+            && name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    })
+}
+
 fn need_command(source: &raw::DetailState, command: &str) -> Result<(), E> {
     source
         .sections
@@ -524,7 +533,7 @@ pub(in crate::integrations::moonraker) fn build_request(
                     need_command(source, "M106")?;
                     format!("M106 S{}", f64::from(*percent) * 255.0 / 100.0)
                 }
-            } else if let Some(name) = name.strip_prefix("fan_generic ").filter(|n| identifier(n)) {
+            } else if let Some(name) = generic_fan_name(name) {
                 need_command(source, "SET_FAN_SPEED")?;
                 format!(
                     "SET_FAN_SPEED FAN={name} SPEED={}",

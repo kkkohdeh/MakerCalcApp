@@ -19,13 +19,14 @@ impl Projection {
     }
 
     pub(super) fn refresh_features(&mut self, source: &raw::DetailState) {
-        if let Some(value) = source
+        let configfile = source
             .sections
             .get(CONFIGURATION)
             .filter(|r| r.status == raw::SectionStatus::Ready)
             .and_then(|r| r.data.as_ref())
             .and_then(|v| v.get("status"))
-            .and_then(|v| v.get("configfile"))
+            .and_then(|v| v.get("configfile"));
+        if let Some(value) = configfile
             && let Some(device) = self.device("configfile", value)
         {
             self.state.devices.push(device);
@@ -111,11 +112,22 @@ impl Projection {
                     if manual_fan {
                         device.actions.push(K::SetFanPower);
                     }
-                } else if name.starts_with("fan_generic ") && generic_fan {
+                } else if generic_fan && control::generic_fan_name(name).is_some() {
                     device.actions.push(K::SetFanPower);
                 }
                 device.output_control_range_pct =
                     device.actions.contains(&K::SetFanPower).then_some([0, 100]);
+                if device.output_control_range_pct.is_some() {
+                    device.output_at_full_control_pct = configfile
+                        .and_then(|value| value.get("settings"))
+                        .and_then(|settings| settings.get(name))
+                        .and_then(Value::as_object)
+                        .and_then(|settings| {
+                            settings.get("max_power").map_or(Some(1.), Value::as_f64)
+                        })
+                        .filter(|&max| max.is_finite() && max > 0.0 && max <= 1.0)
+                        .map(|max| max * 100.0);
+                }
                 // Automatic heater/controller fans remain read-only.
                 // Enabling PWM is not an independent on/off switch.
                 if device.kind == model::DeviceKind::Nozzle {

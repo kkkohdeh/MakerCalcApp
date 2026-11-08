@@ -180,10 +180,12 @@ impl RenderOnce for DropdownMenu {
             PopoverState::new(false, cx)
         });
         let state = window.use_keyed_state((id.clone(), "menu"), cx, |_, _| MenuState::default());
-        let focus = window
-            .use_keyed_state((id.clone(), "trigger-focus"), cx, |_, cx| cx.focus_handle())
-            .read(cx)
-            .clone();
+        let focus = self.trigger.focus.clone().unwrap_or_else(|| {
+            window
+                .use_keyed_state((id.clone(), "trigger-focus"), cx, |_, cx| cx.focus_handle())
+                .read(cx)
+                .clone()
+        });
         let bounds = window.use_keyed_state((id.clone(), "anchor"), cx, |_, _| Bounds::default());
         let anchor = *bounds.read(cx);
         if self.trigger.disabled {

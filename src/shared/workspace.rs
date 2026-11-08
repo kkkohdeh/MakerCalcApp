@@ -146,6 +146,8 @@ pub(crate) struct Device {
     pub(crate) actions: Vec<super::control::MachineActionKind>,
     /// Inclusive writable range for fan power/light brightness, not measured output.
     pub(crate) output_control_range_pct: Option<[u8; 2]>,
+    #[serde(skip)]
+    pub(crate) output_at_full_control_pct: Option<f64>,
     pub(crate) locked_while_printing: Option<bool>,
 }
 
@@ -172,12 +174,20 @@ impl Device {
             nozzle_diameter_mm: None,
             actions: Vec::new(),
             output_control_range_pct: None,
+            output_at_full_control_pct: None,
             locked_while_printing: None,
             readings: super::machine::MachineReadings {
                 extrusion: (kind == DeviceKind::Nozzle).then(super::machine::Extrusion::default),
                 ..Default::default()
             },
         }
+    }
+
+    pub(crate) fn observed_output_control_pct(&self) -> Option<f64> {
+        let maximum = self.output_at_full_control_pct?;
+        let output = self.output_pct?;
+        (maximum.is_finite() && maximum > 0.0 && (0.0..=maximum).contains(&output))
+            .then(|| output / maximum * 100.0)
     }
 }
 

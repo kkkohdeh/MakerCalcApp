@@ -195,6 +195,8 @@ impl Projection {
             .and_then(|n| n.parse::<u32>().ok())
         {
             format!("Boquilla {}", u64::from(index) + 1)
+        } else if let Some(configured_name) = name.strip_prefix("fan_generic ") {
+            clean(configured_name)
         } else if suffix.is_empty() {
             label.to_owned()
         } else {

@@ -141,7 +141,7 @@ impl MakerCalcGpuiApp {
                     .child(div().flex_1())
                     .child(
                         h_flex()
-                            .gap_2()
+                            .gap(px(4.))
                             .items_center()
                             .when(tab == DetailTab::Overview, |row| {
                                 row.children(Self::render_machine_header_controls(

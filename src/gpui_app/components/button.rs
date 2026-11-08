@@ -64,7 +64,7 @@ pub(in crate::gpui_app) struct Button {
     children: Vec<AnyElement>,
     pub(super) disabled: bool,
     tooltip: Option<SharedString>,
-    focus: Option<FocusHandle>,
+    pub(super) focus: Option<FocusHandle>,
     popup: bool,
     toggle: bool,
     selected: bool,
