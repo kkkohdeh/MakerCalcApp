@@ -383,6 +383,7 @@ impl Projection {
         if matches!(self.product, Some(35 | 36 | 38)) {
             info.speed_override_range_pct =
                 Some([50, if self.product == Some(38) { 500 } else { 150 }]);
+            info.print_adjustments_require_active_job = true;
             info.actions.push(K::SetPrintSpeedOverride);
         }
         state.devices.clear();

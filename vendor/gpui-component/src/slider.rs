@@ -7,7 +7,7 @@ use gpui_base::{Slider as BaseSlider, SliderIndicator, SliderThumb, SliderTrack,
 use gpui::{
     App, Axis, Background, Corners, DefiniteLength, ElementId, Entity, EntityId, Hsla,
     InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Pixels, RenderOnce,
-    StatefulInteractiveElement as _, StyleRefinement, Styled, Window, div,
+    SharedString, StatefulInteractiveElement as _, StyleRefinement, Styled, Window, div,
     prelude::FluentBuilder as _, px, relative,
 };
 
@@ -88,6 +88,7 @@ pub struct Slider {
     axis: Axis,
     style: StyleRefinement,
     disabled: bool,
+    label: Option<SharedString>,
     reverse: bool,
 }
 
@@ -99,6 +100,7 @@ impl Slider {
             state: state.clone(),
             style: StyleRefinement::default(),
             disabled: false,
+            label: None,
             reverse: false,
         }
     }
@@ -118,6 +120,11 @@ impl Slider {
     /// Set the disabled state of the slider, default: false
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
+        self
+    }
+
+    pub fn accessibility_label(mut self, label: impl Into<SharedString>) -> Self {
+        self.label = Some(label.into());
         self
     }
 
@@ -193,6 +200,15 @@ impl RenderOnce for Slider {
 
         let ring_color = cx.theme().ring;
         let entity_id = self.state.entity_id();
+        let keyboard_slider = self.label.is_some() && !is_range;
+        let focus = (keyboard_slider && !self.disabled).then(|| {
+            window
+                .use_keyed_state(("slider-focus", entity_id), cx, |_, cx| cx.focus_handle())
+                .read(cx)
+                .clone()
+        });
+        let keyboard_focus = focus.as_ref().is_some_and(|focus| focus.is_focused(window))
+            && window.last_input_was_keyboard();
         let start_ring = is_range.then(|| ThumbRing::new(entity_id, true, ring_color, window, cx));
         let end_ring = ThumbRing::new(entity_id, false, ring_color, window, cx);
 
@@ -261,6 +277,10 @@ impl RenderOnce for Slider {
         BaseSlider::new(&self.state)
             .axis(axis)
             .disabled(self.disabled)
+            .when_some(focus, BaseSlider::focus_handle)
+            .when_some(self.label, |slider, label| {
+                slider.accessibility_label(label)
+            })
             .flex()
             .flex_1()
             .items_center()
@@ -269,6 +289,16 @@ impl RenderOnce for Slider {
             .when(axis.is_horizontal(), |this| this.w_full())
             .refine_style(&self.style)
             .bg(cx.theme().transparent)
+            .when(keyboard_slider, |slider| {
+                slider
+                    .rounded_md()
+                    .border_1()
+                    .border_color(if keyboard_focus {
+                        ring_color
+                    } else {
+                        cx.theme().transparent
+                    })
+            })
             .text_color(cx.theme().foreground)
             .child(
                 SliderTrack::new(&self.state)

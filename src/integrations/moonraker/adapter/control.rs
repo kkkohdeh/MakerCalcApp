@@ -93,6 +93,7 @@ pub(crate) struct PreparedControl {
     generation: u64,
     connection_epoch: u64,
     job_generation: u64,
+    job_target: Option<crate::state::MachineJobTarget>,
     submitted_at: Instant,
     file_key: Option<file_estimates::FileKey>,
     job: Option<(String, f64)>,
@@ -136,7 +137,11 @@ impl Projection {
         if busy {
             return Err(E::Busy);
         }
-        if command.connection_epoch != telemetry.connection_epoch {
+        if command.connection_epoch != telemetry.connection_epoch
+            || command
+                .job_target
+                .is_some_and(|job| job != telemetry.machine_job_target())
+        {
             return Err(E::StaleResource);
         }
         if !self.state.live
@@ -210,6 +215,7 @@ impl Projection {
             submitted_at: command.submitted_at,
             connection_epoch: telemetry.connection_epoch,
             job_generation: telemetry.job_generation,
+            job_target: command.job_target,
             file_key: id.and_then(|id| file_estimates::FileKey::current(&self.state, id)),
             job: self.object_job.clone(),
         };
@@ -294,6 +300,9 @@ pub(in crate::integrations::moonraker) fn build_request(
     }
     if telemetry.connection_epoch != control.connection_epoch
         || telemetry.job_generation != control.job_generation
+        || control
+            .job_target
+            .is_some_and(|job| job != telemetry.machine_job_target())
     {
         return Err(E::StaleResource);
     }

@@ -3,6 +3,7 @@
 use serde::Serialize;
 
 use super::control::{CalibrationKind, MachineActionKind};
+use super::printer::PrintStatus;
 use super::telemetry::FilamentSupplyTelemetry;
 use super::workspace::ResourceId;
 
@@ -175,6 +176,8 @@ pub(crate) struct MachineInfo {
     pub(crate) enclosure_closed: Option<bool>,
     pub(crate) issues: Vec<PrinterIssue>,
     pub(crate) speed_override_range_pct: Option<[u16; 2]>,
+    #[serde(skip)]
+    pub(crate) print_adjustments_require_active_job: bool,
     /// Optional manual-move speed capability: maximum X/Y/Z speeds in mm/s.
     pub(crate) manual_move_max_speed_mm_s: Option<[f64; 3]>,
     pub(crate) z_offset_range_mm: Option<[f64; 2]>,
@@ -187,6 +190,17 @@ pub(crate) struct MachineInfo {
     pub(crate) alerts: Vec<ResourceId>,
     pub(crate) actions: Vec<MachineActionKind>,
     pub(crate) software: Vec<SoftwareVersion>,
+}
+
+impl MachineInfo {
+    pub(crate) fn allows_print_adjustment(&self, status: PrintStatus) -> bool {
+        matches!(status, PrintStatus::Printing | PrintStatus::Paused)
+            || (!self.print_adjustments_require_active_job
+                && matches!(
+                    status,
+                    PrintStatus::Idle | PrintStatus::Completed | PrintStatus::Cancelled
+                ))
+    }
 }
 
 /// Versions from distinct components must never overwrite each other.

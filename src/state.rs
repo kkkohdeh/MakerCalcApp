@@ -42,6 +42,23 @@ pub(crate) struct PrinterState {
     pub(crate) telemetry: crate::shared::telemetry::PrinterTelemetry,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MachineJobTarget {
+    Active(u64),
+    Inactive(u64),
+}
+
+impl PrinterState {
+    pub(crate) fn machine_job_target(&self) -> MachineJobTarget {
+        match self.telemetry.print_state {
+            PrintStatus::Printing | PrintStatus::Paused => {
+                MachineJobTarget::Active(self.job_generation)
+            }
+            _ => MachineJobTarget::Inactive(self.job_generation),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum ValidationError {
     InvalidProgress,

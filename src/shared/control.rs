@@ -315,6 +315,7 @@ pub(crate) enum ControlResult {
 
 pub(crate) struct MachineCommand {
     pub(crate) connection_epoch: u64,
+    pub(crate) job_target: Option<crate::state::MachineJobTarget>,
     pub(crate) submitted_at: Instant,
     pub(crate) action: MachineAction,
     pub(crate) reply: oneshot::Sender<ControlResult>,

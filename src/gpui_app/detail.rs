@@ -140,13 +140,35 @@ impl MakerCalcGpuiApp {
                     )
                     .child(div().flex_1())
                     .child(
-                        Button::new("edit-printer")
-                            .outline()
-                            .small()
-                            .label(t!("common.actions.edit").into_owned())
-                            .on_click(cx.listener(move |app, _, window, cx| {
-                                app.open_edit_printer(id, window, cx);
-                            })),
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .when(tab == DetailTab::Overview, |row| {
+                                row.children(Self::render_machine_header_controls(
+                                    id,
+                                    printer,
+                                    machine_controls.is_pending(id),
+                                    cx,
+                                ))
+                            })
+                            .child(
+                                Button::new("edit-printer")
+                                    .ghost()
+                                    .small()
+                                    .label(t!("common.actions.edit").into_owned())
+                                    .on_click(cx.listener(move |app, _, window, cx| {
+                                        app.open_edit_printer(id, window, cx);
+                                    }))
+                                    .child(
+                                        div()
+                                            .absolute()
+                                            .left(px(8.))
+                                            .right(px(8.))
+                                            .bottom_0()
+                                            .h(px(2.))
+                                            .bg(cx.theme().tokens.primary),
+                                    ),
+                            ),
                     ),
             )
             .child(

@@ -607,6 +607,11 @@
     },
     "controls": {
       "speed": "Print speed (%)",
+      "speed_active_job": "Print speed is adjustable during printing or pause.",
+      "speed_observed": "Reported %{value}%",
+      "speed_unreported": "Speed not reported",
+      "speed_selected": "Selected %{value}%",
+      "speed_apply": "Apply speed",
       "z_offset": "Z offset (mm)",
       "home": "Home",
       "clear_plate": "Confirm build plate is clear",

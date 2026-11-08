@@ -1526,16 +1526,18 @@ async fn run_detail_handler(
             Some(command) = operation_io.machine_actions.recv() => {
                 use crate::shared::control::{ControlError, ControlResult};
                 if command.reply.is_closed() { continue; }
-                let validation = if command.submitted_at.elapsed() > Duration::from_secs(5) {
-                    Err(ControlError::StaleResource)
-                } else if last_operation_finished.is_some_and(|at| command.submitted_at <= at)
-                    || operation_io.state.borrow().is_pending() || !operation_io.actions.is_empty() {
-                    Err(ControlError::Busy)
-                } else {
-                    if matches!(command.action, crate::shared::control::MachineAction::DisableMotors) {
-                        machine.validate_control(&command.action, &state_receiver.borrow(), &current_state, command.connection_epoch).map(|_| None)
+                let validation = {
+                    let state = state_receiver.borrow();
+                    if command.submitted_at.elapsed() > Duration::from_secs(5)
+                        || command.job_target.is_some_and(|job| job != state.machine_job_target()) {
+                        Err(ControlError::StaleResource)
+                    } else if last_operation_finished.is_some_and(|at| command.submitted_at <= at)
+                        || operation_io.state.borrow().is_pending() || !operation_io.actions.is_empty() {
+                        Err(ControlError::Busy)
+                    } else if matches!(command.action, crate::shared::control::MachineAction::DisableMotors) {
+                        machine.validate_control(&command.action, &state, &current_state, command.connection_epoch).map(|_| None)
                     } else {
-                        machine.payload(&command.action, &state_receiver.borrow(), &current_state, command.connection_epoch).map(Some)
+                        machine.payload(&command.action, &state, &current_state, command.connection_epoch).map(Some)
                     }
                 };
                 let source = machine.load_source(&command.action, &current_state);

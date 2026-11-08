@@ -518,6 +518,16 @@ impl OperationHandle {
         action: super::control::MachineAction,
     ) -> Result<oneshot::Receiver<super::control::ControlResult>, super::control::ControlError>
     {
+        self.machine_action_for_job(connection_epoch, None, action)
+    }
+
+    pub(crate) fn machine_action_for_job(
+        &self,
+        connection_epoch: u64,
+        job_target: Option<crate::state::MachineJobTarget>,
+        action: super::control::MachineAction,
+    ) -> Result<oneshot::Receiver<super::control::ControlResult>, super::control::ControlError>
+    {
         use super::control::{ControlError, MachineCommand};
         action.validate()?;
         if self.state.borrow().is_pending() {
@@ -527,6 +537,7 @@ impl OperationHandle {
         self.machine_actions
             .try_send(MachineCommand {
                 connection_epoch,
+                job_target,
                 submitted_at: Instant::now(),
                 action,
                 reply,

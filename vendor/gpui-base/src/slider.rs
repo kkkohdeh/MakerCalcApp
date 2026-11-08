@@ -3,10 +3,10 @@ use std::ops::Range;
 
 use gpui::{
     AccessibleAction, Along, AnyElement, App, AppContext as _, Axis, Bounds, Context, Div,
-    DragMoveEvent, Empty, Entity, EntityId, EventEmitter, InteractiveElement, IntoElement,
-    MouseButton, MouseDownEvent, Orientation, ParentElement, Pixels, Point, Render, RenderOnce,
-    Role, StatefulInteractiveElement, StyleRefinement, Styled, Window, div,
-    prelude::FluentBuilder as _, px,
+    DragMoveEvent, Empty, Entity, EntityId, EventEmitter, FocusHandle, InteractiveElement,
+    IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, Orientation, ParentElement, Pixels,
+    Point, Render, RenderOnce, Role, SharedString, StatefulInteractiveElement, StyleRefinement,
+    Styled, Window, div, prelude::FluentBuilder as _, px,
 };
 
 use crate::{element_ext::ElementExt, geometry::AxisExt};
@@ -418,6 +418,8 @@ pub struct Slider {
     state: Entity<SliderState>,
     axis: Axis,
     disabled: bool,
+    label: Option<SharedString>,
+    focus: Option<FocusHandle>,
     base: Div,
     children: Vec<AnyElement>,
 }
@@ -428,6 +430,8 @@ impl Slider {
             state: state.clone(),
             axis: Axis::Horizontal,
             disabled: false,
+            label: None,
+            focus: None,
             base: div(),
             children: Vec::new(),
         }
@@ -452,6 +456,16 @@ impl Slider {
         self.disabled = disabled;
         self
     }
+
+    pub fn accessibility_label(mut self, label: impl Into<SharedString>) -> Self {
+        self.label = Some(label.into());
+        self
+    }
+
+    pub fn focus_handle(mut self, focus: FocusHandle) -> Self {
+        self.focus = Some(focus);
+        self
+    }
 }
 
 impl ParentElement for Slider {
@@ -472,39 +486,75 @@ impl RenderOnce for Slider {
         let entity_id = self.state.entity_id();
         let state = self.state.read(cx);
         let slider_state = self.state.clone();
+        let focus = self
+            .focus
+            .filter(|_| !self.disabled && !state.value().is_range());
+        let keyboard_state = slider_state.clone();
 
         self.base
             .id(("slider", entity_id))
             .test_support()
-            .role(Role::Slider)
-            .aria_numeric_value(state.value().end() as f64)
-            .aria_min_numeric_value(state.min_value() as f64)
-            .aria_max_numeric_value(state.max_value() as f64)
-            .aria_numeric_value_step(state.step_value() as f64)
-            .aria_orientation(if axis.is_vertical() {
-                Orientation::Vertical
-            } else {
-                Orientation::Horizontal
+            .when(!self.disabled, |slider| {
+                slider
+                    .role(Role::Slider)
+                    .when_some(self.label, |slider, label| slider.aria_label(label))
+                    .aria_numeric_value(state.value().end() as f64)
+                    .aria_min_numeric_value(state.min_value() as f64)
+                    .aria_max_numeric_value(state.max_value() as f64)
+                    .aria_numeric_value_step(state.step_value() as f64)
+                    .aria_orientation(if axis.is_vertical() {
+                        Orientation::Vertical
+                    } else {
+                        Orientation::Horizontal
+                    })
             })
-            .on_a11y_action(AccessibleAction::Increment, {
-                let state = slider_state.clone();
-                move |_, window, cx| {
-                    state.update(cx, |state, cx| {
-                        let value =
-                            (state.value().end() + state.step_value()).min(state.max_value());
-                        state.set_value(value, window, cx);
-                    });
-                }
+            .when_some(focus, |slider, focus| {
+                slider.track_focus(&focus.tab_stop(true)).on_key_down(
+                    move |event: &KeyDownEvent, window: &mut Window, cx: &mut App| {
+                        if event.keystroke.modifiers.modified() {
+                            return;
+                        }
+                        let state = keyboard_state.read(cx);
+                        let current = state.value().end();
+                        let next = match event.keystroke.key.as_str() {
+                            "left" | "down" => current - state.step_value(),
+                            "right" | "up" => current + state.step_value(),
+                            "pageup" => current + state.step_value() * 10.,
+                            "pagedown" => current - state.step_value() * 10.,
+                            "home" => state.min_value(),
+                            "end" => state.max_value(),
+                            _ => return,
+                        }
+                        .clamp(state.min_value(), state.max_value());
+                        window.prevent_default();
+                        cx.stop_propagation();
+                        keyboard_state.update(cx, |state, cx| state.set_value(next, window, cx));
+                    },
+                )
             })
-            .on_a11y_action(AccessibleAction::Decrement, {
-                let state = slider_state.clone();
-                move |_, window, cx| {
-                    state.update(cx, |state, cx| {
-                        let value =
-                            (state.value().end() - state.step_value()).max(state.min_value());
-                        state.set_value(value, window, cx);
-                    });
-                }
+            .when(!self.disabled, |slider| {
+                slider.on_a11y_action(AccessibleAction::Increment, {
+                    let state = slider_state.clone();
+                    move |_, window, cx| {
+                        state.update(cx, |state, cx| {
+                            let value =
+                                (state.value().end() + state.step_value()).min(state.max_value());
+                            state.set_value(value, window, cx);
+                        });
+                    }
+                })
+            })
+            .when(!self.disabled, |slider| {
+                slider.on_a11y_action(AccessibleAction::Decrement, {
+                    let state = slider_state.clone();
+                    move |_, window, cx| {
+                        state.update(cx, |state, cx| {
+                            let value =
+                                (state.value().end() - state.step_value()).max(state.min_value());
+                            state.set_value(value, window, cx);
+                        });
+                    }
+                })
             })
             .when(!self.disabled, |this| {
                 this.on_mouse_up(

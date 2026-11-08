@@ -9,10 +9,11 @@ use crate::shared::control::{
     Axis, CalibrationKind, ControlError, ControlResult, MachineAction, MachineActionKind as K,
 };
 use crate::shared::workspace::ResourceId;
-use crate::state::{LanConnection, LocalPrinterId};
-use gpui_kit::base::{FocusTrapElement as _, TestSupportExt as _};
+use crate::state::{LanConnection, LocalPrinterId, MachineJobTarget};
+use gpui_kit::base::{FocusTrapElement as _, StyledExt as _, TestSupportExt as _};
 use gpui_kit::component::input::InputState;
-use gpui_kit::component::{ActiveTheme as _, Sizable as _, h_flex};
+use gpui_kit::component::slider::{Slider, SliderState};
+use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _,
@@ -45,6 +46,13 @@ impl Control {
             Self::Home | Self::Move(_) | Self::Extrude(_) | Self::Calibration(_) | Self::ClearPlate
         )
     }
+
+    fn header_id(self) -> Option<&'static str> {
+        match self {
+            Self::Speed => Some("print-speed-override"),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -66,22 +74,8 @@ fn choices(printer: &PrinterEntry) -> Vec<Choice> {
             });
         }
     };
-    if machine.speed_override_range_pct.is_some() {
-        add(
-            "speed",
-            K::SetPrintSpeedOverride,
-            Control::Speed,
-            Some(
-                printer
-                    .state
-                    .telemetry
-                    .current_job
-                    .as_ref()
-                    .and_then(|job| job.print_speed_override_pct)
-                    .unwrap_or(100.0)
-                    .to_string(),
-            ),
-        );
+    if speed_range(printer).is_some() {
+        add("speed", K::SetPrintSpeedOverride, Control::Speed, None);
     }
     if machine.z_offset_range_mm.is_some() {
         add(
@@ -197,6 +191,76 @@ fn choices(printer: &PrinterEntry) -> Vec<Choice> {
         }
     }
     choices
+}
+
+fn speed_range(printer: &PrinterEntry) -> Option<[u16; 2]> {
+    let machine = &printer.detail_state.machine;
+    if !machine.actions.contains(&K::SetPrintSpeedOverride) {
+        return None;
+    }
+    machine.speed_override_range_pct.filter(|[min, max]| {
+        min < max
+            && MachineAction::SetPrintSpeedOverride { percent: *min }
+                .validate()
+                .is_ok()
+            && MachineAction::SetPrintSpeedOverride { percent: *max }
+                .validate()
+                .is_ok()
+    })
+}
+
+fn observed_speed(printer: &PrinterEntry) -> Option<f64> {
+    printer
+        .detail_state
+        .devices
+        .iter()
+        .filter(|device| {
+            device.motion_source == Some(crate::shared::machine::MotionSource::CommandInterpreter)
+        })
+        .find_map(|device| device.readings.motion.as_ref()?.speed_override_pct)
+        .or_else(|| {
+            printer
+                .state
+                .telemetry
+                .current_job
+                .as_ref()?
+                .print_speed_override_pct
+        })
+        .filter(|value| value.is_finite())
+}
+
+fn availability(
+    printer: &PrinterEntry,
+    control: Control,
+    pending: bool,
+) -> Result<(), ControlError> {
+    if printer.state.connection != LanConnection::Connected {
+        return Err(ControlError::Disconnected);
+    }
+    if !printer.state.telemetry_ready
+        || !printer.detail_state.live
+        || !printer
+            .state
+            .age_ms(std::time::Instant::now())
+            .is_some_and(|age| age <= 15_000)
+    {
+        return Err(ControlError::InvalidState);
+    }
+    if pending || printer.operation_state.is_pending() {
+        return Err(ControlError::Busy);
+    }
+    if control.requires_idle() {
+        motion::availability(printer, false).map_err(|_| ControlError::InvalidState)?;
+    }
+    if control == Control::Speed
+        && !printer
+            .detail_state
+            .machine
+            .allows_print_adjustment(printer.state.telemetry.print_state)
+    {
+        return Err(ControlError::InvalidState);
+    }
+    Ok(())
 }
 
 fn label(key: &str) -> String {
@@ -333,36 +397,144 @@ struct Editor {
     session: u64,
     epoch: u64,
     choice: Choice,
-    input: Entity<InputState>,
+    value: EditorValue,
     focus: FocusHandle,
     opener: Option<FocusHandle>,
     error: Option<String>,
 }
 
+#[derive(Clone)]
+enum EditorValue {
+    Confirm,
+    Input(Entity<InputState>),
+    Speed {
+        slider: Entity<SliderState>,
+        range: [u16; 2],
+        job: MachineJobTarget,
+    },
+}
+
+fn speed_field(
+    slider: &Entity<SliderState>,
+    [min, max]: [u16; 2],
+    observed: Option<f64>,
+    label: &str,
+    disabled: bool,
+    cx: &gpui_kit::App,
+) -> AnyElement {
+    let reported = observed.map_or_else(
+        || t!("printers.controls.speed_unreported").into_owned(),
+        |value| {
+            let decimal = format!("{value:.2}");
+            let value = decimal.trim_end_matches('0').trim_end_matches('.');
+            let value = if rust_i18n::locale().starts_with("es") {
+                value.replace('.', ",")
+            } else {
+                value.to_owned()
+            };
+            t!("printers.controls.speed_observed", value = value).into_owned()
+        },
+    );
+    let selected = slider.read(cx).value().end();
+    let muted = cx.theme().muted_foreground;
+    v_flex()
+        .gap_2()
+        .child(
+            h_flex()
+                .justify_between()
+                .gap_2()
+                .text_sm()
+                .child(div().text_color(muted).child(reported))
+                .child(
+                    div()
+                        .font_semibold()
+                        .child(t!("printers.controls.speed_selected", value = selected)),
+                ),
+        )
+        .child(
+            Slider::new(slider)
+                .accessibility_label(label.to_owned())
+                .disabled(disabled),
+        )
+        .child(
+            h_flex()
+                .justify_between()
+                .text_xs()
+                .text_color(muted)
+                .child(format!("{min}%"))
+                .child(format!("{max}%")),
+        )
+        .into_any_element()
+}
+
 impl MakerCalcGpuiApp {
+    pub(super) fn render_machine_header_controls(
+        id: LocalPrinterId,
+        printer: &PrinterEntry,
+        pending: bool,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        choices(printer)
+            .into_iter()
+            .filter_map(|choice| {
+                let control_id = choice.control.header_id()?;
+                let blocked = availability(printer, choice.control, pending).err();
+                let machine = &printer.detail_state.machine;
+                let hint = match blocked {
+                    Some(ControlError::InvalidState)
+                        if machine.print_adjustments_require_active_job
+                            && !machine
+                                .allows_print_adjustment(printer.state.telemetry.print_state) =>
+                    {
+                        t!("printers.controls.speed_active_job").into_owned()
+                    }
+                    Some(error) => super::materials::result_message(error),
+                    None => choice.label.clone(),
+                };
+                Some(
+                    Button::new(control_id)
+                        .ghost()
+                        .small()
+                        .w(px(30.))
+                        .px_0()
+                        .icon(Icon::default().data(super::bay::SPEED_ICON))
+                        .child(
+                            div()
+                                .absolute()
+                                .right(px(3.))
+                                .top(px(1.))
+                                .text_size(px(9.))
+                                .child("%"),
+                        )
+                        .accessibility_label(choice.label.clone())
+                        .tooltip(hint)
+                        .popup_trigger()
+                        .disabled(blocked.is_some())
+                        .on_click(cx.listener(move |app, _, window, cx| {
+                            app.open_machine_editor(id, choice.clone(), window, cx);
+                        }))
+                        .into_any_element(),
+                )
+            })
+            .collect()
+    }
+
     pub(super) fn render_machine_controls(
         id: LocalPrinterId,
         printer: &PrinterEntry,
         pending: bool,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        let enabled = printer.state.connection == LanConnection::Connected
-            && printer.state.telemetry_ready
-            && printer.detail_state.live
-            && printer
-                .state
-                .age_ms(std::time::Instant::now())
-                .is_some_and(|age| age <= 15_000)
-            && !printer.operation_state.is_pending()
-            && !pending;
         let choices = choices(printer)
             .into_iter()
-            .filter(|choice| !matches!(choice.control, Control::Home | Control::Move(_)))
+            .filter(|choice| {
+                choice.control.header_id().is_none()
+                    && !matches!(choice.control, Control::Home | Control::Move(_))
+            })
             .collect::<Vec<_>>();
         if choices.is_empty() {
             return None;
         }
-        let idle = motion::availability(printer, pending).is_ok();
         Some(
             h_flex()
                 .id("machine-controls")
@@ -375,7 +547,7 @@ impl MakerCalcGpuiApp {
                         .outline()
                         .small()
                         .label(choice.label.clone())
-                        .disabled(!enabled || (choice.control.requires_idle() && !idle))
+                        .disabled(availability(printer, choice.control, pending).is_err())
                         .on_click(cx.listener(move |app, _, window, cx| {
                             app.open_machine_editor(id, choice.clone(), window, cx);
                         }))
@@ -394,18 +566,49 @@ impl MakerCalcGpuiApp {
         let Some(printer) = self.printers.get(&id) else {
             return;
         };
-        if self.machine_controls.is_pending(id)
-            || (choice.control.requires_idle() && motion::availability(printer, false).is_err())
+        if self.selected != Some(id)
+            || self.detail_tab != super::detail::DetailTab::Overview
+            || availability(
+                printer,
+                choice.control,
+                self.machine_controls.is_pending(id),
+            )
+            .is_err()
         {
             return;
         }
+        let value = if choice.control == Control::Speed {
+            let Some(range @ [min, max]) = speed_range(printer) else {
+                return;
+            };
+            let initial = observed_speed(printer)
+                .unwrap_or(100.)
+                .round()
+                .clamp(f64::from(min), f64::from(max)) as f32;
+            let slider = cx.new(|_| {
+                SliderState::new()
+                    .min(f32::from(min))
+                    .max(f32::from(max))
+                    .default_value(initial)
+            });
+            cx.observe(&slider, |_, _, cx| cx.notify()).detach();
+            EditorValue::Speed {
+                slider,
+                range,
+                job: printer.state.machine_job_target(),
+            }
+        } else if let Some(value) = &choice.value {
+            EditorValue::Input(
+                cx.new(|cx| InputState::new(window, cx).default_value(value.clone())),
+            )
+        } else {
+            EditorValue::Confirm
+        };
         self.machine_controls.editor = Some(Editor {
             printer: id,
             session: printer.session_generation,
             epoch: printer.state.connection_epoch,
-            input: cx.new(|cx| {
-                InputState::new(window, cx).default_value(choice.value.clone().unwrap_or_default())
-            }),
+            value,
             choice,
             focus: cx.focus_handle(),
             opener: window.focused(cx),
@@ -414,43 +617,56 @@ impl MakerCalcGpuiApp {
         cx.notify();
     }
 
+    fn machine_editor_printer(&self, editor: &Editor) -> Result<&PrinterEntry, ControlError> {
+        let printer = self
+            .printers
+            .get(&editor.printer)
+            .ok_or(ControlError::Disconnected)?;
+        if self.selected != Some(editor.printer)
+            || self.detail_tab != super::detail::DetailTab::Overview
+            || printer.session_generation != editor.session
+            || printer.state.connection_epoch != editor.epoch
+        {
+            return Err(ControlError::StaleResource);
+        }
+        if !choices(printer)
+            .iter()
+            .any(|choice| choice.control == editor.choice.control)
+        {
+            return Err(ControlError::Unsupported);
+        }
+        if let EditorValue::Speed { range, job, .. } = &editor.value
+            && (Some(*range) != speed_range(printer) || *job != printer.state.machine_job_target())
+        {
+            return Err(ControlError::StaleResource);
+        }
+        availability(
+            printer,
+            editor.choice.control,
+            self.machine_controls.is_pending(editor.printer),
+        )?;
+        Ok(printer)
+    }
+
     fn submit_machine_editor(&mut self, cx: &mut Context<Self>) {
         let Some(editor) = self.machine_controls.editor.clone() else {
             return;
         };
         let result = (|| {
-            let printer = self
-                .printers
-                .get(&editor.printer)
-                .ok_or(ControlError::Disconnected)?;
-            if printer.session_generation != editor.session
-                || printer.state.connection_epoch != editor.epoch
-            {
-                return Err(ControlError::StaleResource);
-            }
-            if !choices(printer)
-                .iter()
-                .any(|choice| choice.control == editor.choice.control)
-            {
-                return Err(ControlError::Unsupported);
-            }
-            if editor.choice.control.requires_idle() {
-                if self.selected != Some(editor.printer)
-                    || self.detail_tab != super::detail::DetailTab::Overview
-                {
-                    return Err(ControlError::StaleResource);
-                }
-                motion::availability(printer, self.machine_controls.is_pending(editor.printer))
-                    .map_err(|_| ControlError::InvalidState)?;
-            }
-            let action = action(
-                printer,
-                editor.choice.control,
-                editor.input.read(cx).value().as_ref(),
-            )?;
+            let printer = self.machine_editor_printer(&editor)?;
+            let value = match &editor.value {
+                EditorValue::Confirm => String::new(),
+                EditorValue::Input(input) => input.read(cx).value().to_string(),
+                EditorValue::Speed { slider, .. } => slider.read(cx).value().end().to_string(),
+            };
+            let action = action(printer, editor.choice.control, &value)?;
+            let job = match editor.value {
+                EditorValue::Speed { job, .. } => Some(job),
+                _ => None,
+            };
             printer
                 .operation
-                .machine_action(editor.epoch, action.clone())
+                .machine_action_for_job(editor.epoch, job, action.clone())
                 .map(|receiver| (action, receiver))
         })();
         let (requested, receiver) = match result {
@@ -561,6 +777,33 @@ impl MakerCalcGpuiApp {
         };
         self.machine_controls.rendered = true;
         let editor = display.value;
+        let speed_check = matches!(editor.value, EditorValue::Speed { .. })
+            .then(|| self.machine_editor_printer(&editor));
+        let speed_blocked = speed_check.as_ref().is_some_and(Result::is_err);
+        let disabled = display.closing || speed_blocked;
+        let error = speed_check
+            .as_ref()
+            .and_then(|result| result.as_ref().err())
+            .map(|&error| super::materials::result_message(error))
+            .or(editor.error);
+        let speed = speed_check.is_some();
+        let field = match &editor.value {
+            EditorValue::Confirm => None,
+            EditorValue::Input(input) => Some(
+                Input::new(input)
+                    .aria_label(t!("printers.controls.value").into_owned())
+                    .disabled(display.closing)
+                    .into_any_element(),
+            ),
+            EditorValue::Speed { slider, range, .. } => Some(speed_field(
+                slider,
+                *range,
+                speed_check.and_then(Result::ok).and_then(observed_speed),
+                &editor.choice.label,
+                disabled,
+                cx,
+            )),
+        };
         if !display.closing && !editor.focus.contains_focused(window, cx) {
             editor.focus.focus(window, cx);
         }
@@ -578,21 +821,20 @@ impl MakerCalcGpuiApp {
                     dialog::surface("machine-editor-dialog", editor.choice.label.clone(), cx)
                         .max_h(window.viewport_size().height - px(48.))
                         .track_focus(&editor.focus)
-                        .child(dialog::header().child(dialog::title().child(editor.choice.label)))
                         .child(
-                            div()
-                                .text_sm()
-                                .whitespace_normal()
-                                .child(t!("printers.controls.confirm")),
+                            dialog::header()
+                                .child(dialog::title().child(editor.choice.label.clone())),
                         )
-                        .when(editor.choice.value.is_some(), |dialog| {
+                        .when(!speed, |dialog| {
                             dialog.child(
-                                Input::new(&editor.input)
-                                    .aria_label(t!("printers.controls.value").into_owned())
-                                    .disabled(display.closing),
+                                div()
+                                    .text_sm()
+                                    .whitespace_normal()
+                                    .child(t!("printers.controls.confirm")),
                             )
                         })
-                        .when_some(editor.error, |dialog, error| {
+                        .children(field)
+                        .when_some(error, |dialog, error| {
                             dialog.child(div().text_color(cx.theme().danger).child(error))
                         })
                         .child(
@@ -609,8 +851,12 @@ impl MakerCalcGpuiApp {
                                 )
                                 .child(
                                     Button::new("machine-editor-submit")
-                                        .label(t!("printers.controls.send").into_owned())
-                                        .disabled(display.closing)
+                                        .label(if speed {
+                                            t!("printers.controls.speed_apply").into_owned()
+                                        } else {
+                                            t!("printers.controls.send").into_owned()
+                                        })
+                                        .disabled(disabled)
                                         .on_click(cx.listener(|app, _, _, cx| {
                                             app.submit_machine_editor(cx)
                                         })),
