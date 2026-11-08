@@ -5,8 +5,9 @@ use crate::shared::control::{
     valid_label,
 };
 use crate::shared::machine::{
-    DeviceMetadata, FanRole, MachineActivity, MachineInfo, PrinterIssue, PrinterIssueKind,
-    SupplyBlock, SupplyControl, SupplyKind, SupplyOperation, SupplyOperationPhase, SupplyResource,
+    CalibrationReadiness, DeviceMetadata, FanRole, MachineActivity, MachineInfo, PrinterIssue,
+    PrinterIssueKind, SupplyBlock, SupplyControl, SupplyKind, SupplyOperation,
+    SupplyOperationPhase, SupplyResource,
 };
 use crate::shared::workspace::{Camera, Device, DeviceKind};
 
@@ -366,6 +367,13 @@ impl Projection {
                 CalibrationKind::BedLeveling,
                 CalibrationKind::VibrationCompensation,
             ];
+            info.calibration_readiness = Some(
+                match info.idle_setting_availability(super::map_status(self.status.as_deref())) {
+                    Ok(()) => CalibrationReadiness::Ready,
+                    Err(ControlError::Busy) => CalibrationReadiness::Busy,
+                    Err(_) => CalibrationReadiness::NotReady,
+                },
+            );
             info.print_options
                 .push(crate::shared::workspace::PrintOptionKind::BedLeveling);
             if self.product == Some(38) {
@@ -937,7 +945,7 @@ impl Projection {
                 .availability(action.kind(), Instant::now())
                 .map_err(SupplyBlock::error)?;
         }
-        let idle = matches!(self.status.as_deref(), Some("ready" | "idle"));
+        let idle = super::map_status(self.status.as_deref()) == PrintStatus::Idle;
         let material_busy = self.material_action_in_progress();
         let needs_idle = matches!(
             action,
@@ -1092,10 +1100,22 @@ impl Projection {
                 }
                 ("stateCtrl_cmd", json!({"action":"setClearPlatform"}))
             }
-            MachineAction::RunCalibration { kind } => (
-                "calibration_cmd",
-                json!({"levelingDetection":open(*kind == CalibrationKind::BedLeveling),"vibrationCompensation":open(*kind == CalibrationKind::VibrationCompensation)}),
-            ),
+            MachineAction::RunCalibration { kind } => {
+                if *kind == CalibrationKind::BedLeveling {
+                    detail
+                        .machine
+                        .idle_setting_availability(state.telemetry.print_state)?;
+                    detail
+                        .machine
+                        .calibration_readiness
+                        .ok_or(ControlError::InvalidState)?
+                        .check()?;
+                }
+                (
+                    "calibration_cmd",
+                    json!({"levelingDetection":open(*kind == CalibrationKind::BedLeveling),"vibrationCompensation":open(*kind == CalibrationKind::VibrationCompensation)}),
+                )
+            }
             MachineAction::SetAutoShutdown { enabled, delay_s } => {
                 detail
                     .machine

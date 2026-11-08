@@ -293,6 +293,14 @@ fn availability(
             .machine
             .idle_setting_availability(printer.state.telemetry.print_state)?;
     }
+    if control == Control::Calibration(CalibrationKind::BedLeveling) {
+        printer
+            .detail_state
+            .machine
+            .calibration_readiness
+            .ok_or(ControlError::InvalidState)?
+            .check()?;
+    }
     if control.requires_idle() {
         motion::availability(printer, false).map_err(|_| ControlError::InvalidState)?;
     }
@@ -380,6 +388,23 @@ fn editor_message(error: ControlError) -> String {
         return t!("printers.controls.reopen").into_owned();
     }
     machine_result_message(error)
+}
+
+fn calibration_block_message(printer: &PrinterEntry, error: ControlError) -> Option<String> {
+    use crate::shared::machine::CalibrationReadiness;
+
+    if error != ControlError::InvalidState {
+        return None;
+    }
+    if let Err(key) = motion::availability(printer, false) {
+        return Some(t!(key).into_owned());
+    }
+    let key = match printer.detail_state.machine.calibration_readiness {
+        Some(CalibrationReadiness::NeedsHoming) => "printers.controls.calibration_home_required",
+        None | Some(CalibrationReadiness::NotReady) => "printers.controls.calibration_wait",
+        _ => return None,
+    };
+    Some(t!(key).into_owned())
 }
 
 fn localized_decimal(value: &str) -> String {
@@ -489,7 +514,10 @@ impl MakerCalcGpuiApp {
         };
         if matches!(
             choice.control,
-            Control::ClearPlate | Control::AutoShutdown(_) | Control::Name
+            Control::ClearPlate
+                | Control::AutoShutdown(_)
+                | Control::Name
+                | Control::Calibration(CalibrationKind::BedLeveling)
         ) && !choices(printer)
             .iter()
             .any(|current| current.control == choice.control)
@@ -533,6 +561,9 @@ impl MakerCalcGpuiApp {
                 Some(printer.state.machine_job_target())
             }
             Control::ClearPlate => Some(printer.state.plate_job_target()),
+            Control::Calibration(CalibrationKind::BedLeveling) => {
+                Some(printer.state.machine_job_target())
+            }
             _ => None,
         };
         let value = if choice.control == Control::Speed {
@@ -758,10 +789,19 @@ impl MakerCalcGpuiApp {
         let error = live_check
             .as_ref()
             .and_then(|result| result.as_ref().err())
-            .map(|&error| editor_message(error))
+            .map(|&error| {
+                let hint = (editor.choice.control
+                    == Control::Calibration(CalibrationKind::BedLeveling))
+                .then(|| self.printers.get(&editor.printer))
+                .flatten()
+                .and_then(|printer| calibration_block_message(printer, error));
+                hint.unwrap_or_else(|| editor_message(error))
+            })
             .or(editor.error);
         let speed = editor.choice.control == Control::Speed;
         let clear_plate = editor.choice.control == Control::ClearPlate;
+        let bed_leveling =
+            editor.choice.control == Control::Calibration(CalibrationKind::BedLeveling);
         let shutdown_hint = match editor.choice.control {
             Control::AutoShutdown(true) => editor
                 .shutdown_step
@@ -841,6 +881,8 @@ impl MakerCalcGpuiApp {
                                 z_range.or(shutdown_hint).unwrap_or_else(|| {
                                     if clear_plate {
                                         t!("printers.controls.clear_plate_confirm").into_owned()
+                                    } else if bed_leveling {
+                                        t!("printers.controls.level_bed_confirm").into_owned()
                                     } else if printer_name {
                                         t!("printers.controls.name_limit").into_owned()
                                     } else {
@@ -887,6 +929,8 @@ impl MakerCalcGpuiApp {
                                             t!("printers.controls.z_offset_apply").into_owned()
                                         } else if clear_plate {
                                             t!("printers.controls.clear_plate").into_owned()
+                                        } else if bed_leveling {
+                                            t!("printers.controls.level_bed").into_owned()
                                         } else if auto_shutdown {
                                             editor.choice.label.clone()
                                         } else if printer_name {

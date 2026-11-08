@@ -51,6 +51,7 @@ impl Projection {
             .and_then(|device| device.readings.motion.as_ref()?.origin_offset_mm)
             .map(|[_, _, z]| z);
         self.state.machine.calibrations.clear();
+        self.state.machine.calibration_readiness = Some(control::calibration_readiness(source));
         for (command, kind) in [
             (
                 "BED_MESH_CALIBRATE",

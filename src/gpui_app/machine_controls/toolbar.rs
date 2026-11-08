@@ -1,9 +1,9 @@
-use super::{Control, availability, choices};
+use super::{Control, availability, calibration_block_message, choices};
 use crate::gpui_app::{
     MakerCalcGpuiApp, PrinterEntry, bay, components::button::Button, icons, materials,
 };
 use crate::i18n::t;
-use crate::shared::control::ControlError;
+use crate::shared::control::{CalibrationKind, ControlError};
 use crate::state::LocalPrinterId;
 use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -11,12 +11,13 @@ use gpui_kit::{
     AnyElement, Context, IntoElement, ParentElement as _, Styled as _, Window, div, px,
 };
 
-const HEADER_CONTROLS: [Control; 5] = [
+const HEADER_CONTROLS: [Control; 6] = [
     Control::Speed,
     Control::ZOffset,
     Control::ClearPlate,
     Control::AutoShutdown(true),
     Control::Name,
+    Control::Calibration(CalibrationKind::BedLeveling),
 ];
 
 struct HeaderAction {
@@ -33,6 +34,9 @@ impl Control {
             Self::ClearPlate => ("printer-clear-plate", icons::SVG_CLEAR_PLATE, None),
             Self::AutoShutdown(_) => ("printer-auto-shutdown", icons::SVG_AUTO_SHUTDOWN, None),
             Self::Name => ("printer-device-name", icons::SVG_PRINTER_NAME, None),
+            Self::Calibration(CalibrationKind::BedLeveling) => {
+                ("printer-level-bed", icons::SVG_LEVEL_BED, None)
+            }
             _ => return None,
         };
         Some(HeaderAction { id, svg, badge })
@@ -68,6 +72,12 @@ impl MakerCalcGpuiApp {
                 let (_, focus) = focus_handles.iter().find(|(name, _)| *name == header.id)?;
                 let blocked = availability(printer, choice.control, pending).err();
                 let hint = match blocked {
+                    Some(error)
+                        if choice.control == Control::Calibration(CalibrationKind::BedLeveling) =>
+                    {
+                        calibration_block_message(printer, error)
+                            .unwrap_or_else(|| materials::result_message(error))
+                    }
                     Some(ControlError::InvalidState)
                         if choice.control == Control::ClearPlate
                             && !status.is_completed_or_cancelled() =>

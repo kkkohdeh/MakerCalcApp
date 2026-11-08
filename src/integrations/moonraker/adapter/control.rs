@@ -63,6 +63,26 @@ pub(super) fn motor_motion_idle(source: &raw::DetailState) -> Option<bool> {
     (!unknown).then_some(true)
 }
 
+pub(super) fn calibration_readiness(
+    source: &raw::DetailState,
+) -> crate::shared::machine::CalibrationReadiness {
+    use crate::shared::machine::CalibrationReadiness;
+    if motor_motion_idle(source) == Some(false) {
+        return CalibrationReadiness::Busy;
+    }
+    match source
+        .objects
+        .pointer("/toolhead/homed_axes")
+        .and_then(Value::as_str)
+    {
+        Some("xyz") => CalibrationReadiness::Ready,
+        Some(axes) if axes.bytes().all(|axis| matches!(axis, b'x' | b'y' | b'z')) => {
+            CalibrationReadiness::NeedsHoming
+        }
+        _ => CalibrationReadiness::NotReady,
+    }
+}
+
 pub(super) fn manual_move_max_speed_mm_s(source: &raw::DetailState) -> Option<[f64; 3]> {
     if !source.live {
         return None;
@@ -520,10 +540,7 @@ pub(in crate::integrations::moonraker) fn build_request(
         }
         A::RunCalibration { kind } => {
             require_idle()?;
-            let tool = objects.get("toolhead").ok_or(E::InvalidState)?;
-            if tool.get("homed_axes").and_then(Value::as_str) != Some("xyz") {
-                return Err(E::InvalidState);
-            }
+            calibration_readiness(source).check()?;
             let cmd = match kind {
                 CalibrationKind::BedLeveling => "BED_MESH_CALIBRATE",
                 CalibrationKind::VibrationCompensation => "SHAPER_CALIBRATE",

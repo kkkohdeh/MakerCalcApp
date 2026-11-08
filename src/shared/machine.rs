@@ -13,6 +13,24 @@ pub(crate) enum MotionSource {
     MotionPlanner,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CalibrationReadiness {
+    Ready,
+    Busy,
+    NeedsHoming,
+    NotReady,
+}
+
+impl CalibrationReadiness {
+    pub(crate) fn check(self) -> Result<(), ControlError> {
+        match self {
+            Self::Ready => Ok(()),
+            Self::Busy => Err(ControlError::Busy),
+            Self::NeedsHoming | Self::NotReady => Err(ControlError::InvalidState),
+        }
+    }
+}
+
 /// Machine identity reported by the printer, not the local alias or host software.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub(crate) struct DeviceMetadata {
@@ -186,6 +204,8 @@ pub(crate) struct MachineInfo {
     pub(crate) manual_move_max_speed_mm_s: Option<[f64; 3]>,
     pub(crate) z_offset_range_mm: Option<[f64; 2]>,
     pub(crate) calibrations: Vec<CalibrationKind>,
+    #[serde(skip)]
+    pub(crate) calibration_readiness: Option<CalibrationReadiness>,
     pub(crate) print_options: Vec<super::workspace::PrintOptionKind>,
     pub(crate) supplies: Vec<SupplyResource>,
     /// Reported supply routed to the active head; not a filament-presence sensor.
