@@ -1,6 +1,6 @@
 //! Bounded projection of optional local features; no raw provider values escape.
 use super::*;
-use crate::shared::control::MachineActionKind as K;
+use crate::shared::control::{MAX_PRINT_SPEED_OVERRIDE_PCT, MachineActionKind as K};
 use crate::shared::gcode::{GcodeFacts, GcodeMaterialChannel};
 use crate::shared::machine::{
     FanRole, MotionSource, PrintObject, SoftwareRole, SoftwareVersion, StorageVolume,
@@ -38,8 +38,9 @@ impl Projection {
             self.state.machine.actions.push(K::DisableMotors);
         }
         self.state.machine.manual_move_max_speed_mm_s = None;
-        self.state.machine.speed_override_range_pct =
-            self.command_available("M220", source).then_some([1, 1000]);
+        self.state.machine.speed_override_range_pct = self
+            .command_available("M220", source)
+            .then_some([1, MAX_PRINT_SPEED_OVERRIDE_PCT]);
         self.state.machine.z_offset_range_mm = self
             .command_available("SET_GCODE_OFFSET", source)
             .then_some([-10.0, 10.0]);

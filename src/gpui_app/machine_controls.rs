@@ -6,7 +6,8 @@ use super::feedback::ToastKind;
 use super::{MakerCalcGpuiApp, PrinterEntry};
 use crate::i18n::t;
 use crate::shared::control::{
-    Axis, CalibrationKind, ControlError, ControlResult, MachineAction, MachineActionKind as K,
+    Axis, CalibrationKind, ControlError, ControlResult, MAX_PRINT_SPEED_OVERRIDE_PCT,
+    MachineAction, MachineActionKind as K,
 };
 use crate::shared::machine::MachineInfo;
 use crate::shared::workspace::ResourceId;
@@ -197,15 +198,9 @@ fn speed_range(printer: &PrinterEntry) -> Option<[u16; 2]> {
     if !machine.actions.contains(&K::SetPrintSpeedOverride) {
         return None;
     }
-    machine.speed_override_range_pct.filter(|[min, max]| {
-        min < max
-            && MachineAction::SetPrintSpeedOverride { percent: *min }
-                .validate()
-                .is_ok()
-            && MachineAction::SetPrintSpeedOverride { percent: *max }
-                .validate()
-                .is_ok()
-    })
+    let [min, max] = machine.speed_override_range_pct?;
+    let max = max.min(MAX_PRINT_SPEED_OVERRIDE_PCT);
+    (min > 0 && min < max).then_some([min, max])
 }
 
 fn observed_speed(printer: &PrinterEntry) -> Option<f64> {

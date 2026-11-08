@@ -1,8 +1,8 @@
 //! FlashForge's translation of the local, manufacturer-independent machine contract.
 use super::*;
 use crate::shared::control::{
-    Axis, CalibrationKind, ControlError, ControlResult, MachineAction, MachineActionKind as K,
-    valid_label,
+    Axis, CalibrationKind, ControlError, ControlResult, MAX_PRINT_SPEED_OVERRIDE_PCT,
+    MachineAction, MachineActionKind as K, valid_label,
 };
 use crate::shared::machine::{
     CalibrationReadiness, DeviceMetadata, FanRole, MachineActivity, MachineInfo, PrinterIssue,
@@ -13,6 +13,8 @@ use crate::shared::workspace::{Camera, Device, DeviceKind};
 
 mod filament;
 pub(super) mod motors;
+
+const SPEED_OVERRIDE_RANGE_PCT: [u16; 2] = [50, MAX_PRINT_SPEED_OVERRIDE_PCT];
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -393,8 +395,7 @@ impl Projection {
             ]);
         }
         if matches!(self.product, Some(35 | 36 | 38)) {
-            info.speed_override_range_pct =
-                Some([50, if self.product == Some(38) { 500 } else { 150 }]);
+            info.speed_override_range_pct = Some(SPEED_OVERRIDE_RANGE_PCT);
             info.actions.push(K::SetPrintSpeedOverride);
         }
         state.devices.clear();
@@ -1034,8 +1035,8 @@ impl Projection {
                 ("extrudeCtrl_cmd", json!({"axis":"e","delta":length_mm}))
             }
             MachineAction::SetPrintSpeedOverride { percent } => {
-                let maximum = if self.product == Some(38) { 500 } else { 150 };
-                if !(50..=maximum).contains(percent) {
+                let [min, max] = SPEED_OVERRIDE_RANGE_PCT;
+                if !(min..=max).contains(percent) {
                     return Err(ControlError::InvalidData);
                 }
                 if !printing {
