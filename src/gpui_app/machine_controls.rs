@@ -21,8 +21,11 @@ use gpui_kit::{
     IntoElement, ParentElement as _, Styled as _, Task, Window, div, px,
 };
 
+mod intent;
 mod motion;
 mod toolbar;
+
+use intent::action;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Control {
@@ -273,14 +276,22 @@ fn availability(
             None => return Err(ControlError::InvalidState),
         }
     }
+    if matches!(control, Control::Name | Control::AutoShutdown(_))
+        && printer.material_pending.is_some()
+    {
+        return Err(ControlError::Busy);
+    }
     if let Control::AutoShutdown(enabled) = control {
-        if printer.material_pending.is_some() {
-            return Err(ControlError::Busy);
-        }
         printer
             .detail_state
             .machine
             .auto_shutdown_availability(printer.state.telemetry.print_state, enabled)?;
+    }
+    if control == Control::Name {
+        printer
+            .detail_state
+            .machine
+            .idle_setting_availability(printer.state.telemetry.print_state)?;
     }
     if control.requires_idle() {
         motion::availability(printer, false).map_err(|_| ControlError::InvalidState)?;
@@ -316,109 +327,6 @@ fn label(key: &str) -> String {
         _ => unreachable!("closed control label set"),
     }
     .into_owned()
-}
-
-fn action(
-    printer: &PrinterEntry,
-    control: Control,
-    value: &str,
-) -> Result<MachineAction, ControlError> {
-    let number = || {
-        value
-            .trim()
-            .parse::<f64>()
-            .map_err(|_| ControlError::InvalidData)
-    };
-    let integer = || {
-        value
-            .trim()
-            .parse::<u16>()
-            .map_err(|_| ControlError::InvalidData)
-    };
-    let machine = &printer.detail_state.machine;
-    let action = match control {
-        Control::Speed => {
-            let percent = integer()?;
-            let [min, max] = machine
-                .speed_override_range_pct
-                .ok_or(ControlError::Unsupported)?;
-            if !(min..=max).contains(&percent) {
-                return Err(ControlError::InvalidData);
-            }
-            MachineAction::SetPrintSpeedOverride { percent }
-        }
-        Control::ZOffset => {
-            let offset_mm = value
-                .trim()
-                .replace(',', ".")
-                .parse::<f64>()
-                .map_err(|_| ControlError::InvalidData)?;
-            let [min, max] = machine.z_offset_range_mm.ok_or(ControlError::Unsupported)?;
-            if !(min..=max).contains(&offset_mm) {
-                return Err(ControlError::InvalidData);
-            }
-            MachineAction::SetZOffset { offset_mm }
-        }
-        Control::Fan(fan_id) => {
-            let percent = integer()?;
-            let range = printer
-                .detail_state
-                .devices
-                .iter()
-                .find(|d| d.id == fan_id)
-                .and_then(|d| d.output_control_range_pct)
-                .ok_or(ControlError::Unsupported)?;
-            if !(u16::from(range[0])..=u16::from(range[1])).contains(&percent) {
-                return Err(ControlError::InvalidData);
-            }
-            MachineAction::SetFanPower {
-                fan_id,
-                percent: u8::try_from(percent).map_err(|_| ControlError::InvalidData)?,
-            }
-        }
-        Control::FanEnabled(fan_id, enabled) => MachineAction::SetFanEnabled { fan_id, enabled },
-        Control::Camera(camera_id, enabled) => {
-            MachineAction::SetCameraStreamEnabled { camera_id, enabled }
-        }
-        Control::Calibration(kind) => MachineAction::RunCalibration { kind },
-        Control::Home => MachineAction::HomeAxes {
-            axes: vec![Axis::X, Axis::Y, Axis::Z],
-        },
-        Control::Move(axis) => MachineAction::MoveAxisRelative {
-            axis,
-            distance_mm: number()?,
-            speed_mm_s: None,
-        },
-        Control::Extrude(nozzle_id) => MachineAction::ExtrudeFilament {
-            nozzle_id,
-            length_mm: number()?,
-        },
-        Control::ClearPlate => MachineAction::ConfirmBuildPlateCleared,
-        Control::AutoShutdown(enabled) => MachineAction::SetAutoShutdown {
-            enabled,
-            delay_s: if enabled {
-                let seconds: u32 = value
-                    .trim()
-                    .parse()
-                    .map_err(|_| ControlError::InvalidData)?;
-                let step = machine
-                    .auto_shutdown_delay_step_s
-                    .ok_or(ControlError::Unsupported)?;
-                if step == 0 || !seconds.is_multiple_of(step) {
-                    return Err(ControlError::InvalidData);
-                }
-                seconds
-            } else {
-                0
-            },
-        },
-        Control::Name => MachineAction::SetDeviceName {
-            name: value.trim().into(),
-        },
-        Control::Acknowledge(alert_id) => MachineAction::AcknowledgePrinterAlert { alert_id },
-    };
-    action.validate()?;
-    Ok(action)
 }
 
 #[derive(Default)]
@@ -458,6 +366,20 @@ enum EditorValue {
         slider: Entity<SliderState>,
         range: [u16; 2],
     },
+}
+
+fn machine_result_message(error: ControlError) -> String {
+    match error {
+        ControlError::InvalidData => t!("printers.controls.invalid_value").into_owned(),
+        _ => super::materials::result_message(error),
+    }
+}
+
+fn editor_message(error: ControlError) -> String {
+    if error == ControlError::StaleResource {
+        return t!("printers.controls.reopen").into_owned();
+    }
+    machine_result_message(error)
 }
 
 fn localized_decimal(value: &str) -> String {
@@ -567,7 +489,7 @@ impl MakerCalcGpuiApp {
         };
         if matches!(
             choice.control,
-            Control::ClearPlate | Control::AutoShutdown(_)
+            Control::ClearPlate | Control::AutoShutdown(_) | Control::Name
         ) && !choices(printer)
             .iter()
             .any(|current| current.control == choice.control)
@@ -585,6 +507,17 @@ impl MakerCalcGpuiApp {
         {
             return;
         }
+        if choice.control == Control::Name {
+            choice.value = Some(
+                printer
+                    .detail_state
+                    .machine
+                    .device
+                    .reported_name
+                    .clone()
+                    .unwrap_or_default(),
+            );
+        }
         let z_range = if choice.control == Control::ZOffset {
             let machine = &printer.detail_state.machine;
             let Some(range) = z_offset_range(machine) else {
@@ -596,7 +529,7 @@ impl MakerCalcGpuiApp {
             None
         };
         let job = match choice.control {
-            Control::Speed | Control::ZOffset | Control::AutoShutdown(_) => {
+            Control::Speed | Control::ZOffset | Control::AutoShutdown(_) | Control::Name => {
                 Some(printer.state.machine_job_target())
             }
             Control::ClearPlate => Some(printer.state.plate_job_target()),
@@ -669,6 +602,15 @@ impl MakerCalcGpuiApp {
                 && editor.z_range != z_offset_range(&printer.detail_state.machine)
             || editor.shutdown_step.is_some()
                 && editor.shutdown_step != printer.detail_state.machine.auto_shutdown_delay_step_s
+            || editor.choice.control == Control::Name
+                && editor.choice.value.as_deref().unwrap_or_default()
+                    != printer
+                        .detail_state
+                        .machine
+                        .device
+                        .reported_name
+                        .as_deref()
+                        .unwrap_or_default()
             || matches!(&editor.value, EditorValue::Speed { range, .. } if Some(*range) != speed_range(printer))
         {
             return Err(ControlError::StaleResource);
@@ -702,7 +644,7 @@ impl MakerCalcGpuiApp {
             Ok(request) => request,
             Err(error) => {
                 if let Some(editor) = &mut self.machine_controls.editor {
-                    editor.error = Some(super::materials::result_message(error));
+                    editor.error = Some(editor_message(error));
                 }
                 cx.notify();
                 return;
@@ -772,7 +714,7 @@ impl MakerCalcGpuiApp {
                         t!("printers.controls.uncertain").into_owned(),
                     ),
                     ControlResult::Rejected(error) => {
-                        (ToastKind::Error, super::materials::result_message(error))
+                        (ToastKind::Error, machine_result_message(error))
                     }
                 };
                 app.push_toast(tone, message, None, cx);
@@ -807,6 +749,7 @@ impl MakerCalcGpuiApp {
         self.machine_controls.rendered = true;
         let editor = display.value;
         let auto_shutdown = matches!(editor.choice.control, Control::AutoShutdown(_));
+        let printer_name = editor.choice.control == Control::Name;
         let live_check = editor
             .job
             .is_some()
@@ -815,7 +758,7 @@ impl MakerCalcGpuiApp {
         let error = live_check
             .as_ref()
             .and_then(|result| result.as_ref().err())
-            .map(|&error| super::materials::result_message(error))
+            .map(|&error| editor_message(error))
             .or(editor.error);
         let speed = editor.choice.control == Control::Speed;
         let clear_plate = editor.choice.control == Control::ClearPlate;
@@ -852,9 +795,10 @@ impl MakerCalcGpuiApp {
                     .when(auto_shutdown, |input| {
                         input.id("machine-auto-shutdown-delay")
                     })
+                    .when(printer_name, |input| input.id("machine-printer-name"))
                     .aria_label(if auto_shutdown {
                         t!("printers.controls.auto_shutdown_seconds").into_owned()
-                    } else if z_range.is_some() {
+                    } else if z_range.is_some() || printer_name {
                         editor.choice.label.clone()
                     } else {
                         t!("printers.controls.value").into_owned()
@@ -897,6 +841,8 @@ impl MakerCalcGpuiApp {
                                 z_range.or(shutdown_hint).unwrap_or_else(|| {
                                     if clear_plate {
                                         t!("printers.controls.clear_plate_confirm").into_owned()
+                                    } else if printer_name {
+                                        t!("printers.controls.name_limit").into_owned()
                                     } else {
                                         t!("printers.controls.confirm").into_owned()
                                     }
@@ -913,7 +859,13 @@ impl MakerCalcGpuiApp {
                         })
                         .children(field)
                         .when_some(error, |dialog, error| {
-                            dialog.child(div().text_color(cx.theme().danger).child(error))
+                            dialog.child(
+                                div()
+                                    .id("machine-editor-error")
+                                    .test_support()
+                                    .text_color(cx.theme().danger)
+                                    .child(error),
+                            )
                         })
                         .child(
                             dialog::footer(window, cx)
@@ -937,6 +889,8 @@ impl MakerCalcGpuiApp {
                                             t!("printers.controls.clear_plate").into_owned()
                                         } else if auto_shutdown {
                                             editor.choice.label.clone()
+                                        } else if printer_name {
+                                            t!("printers.controls.name_apply").into_owned()
                                         } else {
                                             t!("printers.controls.send").into_owned()
                                         })

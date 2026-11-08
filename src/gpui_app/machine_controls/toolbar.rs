@@ -11,11 +11,12 @@ use gpui_kit::{
     AnyElement, Context, IntoElement, ParentElement as _, Styled as _, Window, div, px,
 };
 
-const HEADER_CONTROLS: [Control; 4] = [
+const HEADER_CONTROLS: [Control; 5] = [
     Control::Speed,
     Control::ZOffset,
     Control::ClearPlate,
     Control::AutoShutdown(true),
+    Control::Name,
 ];
 
 struct HeaderAction {
@@ -31,6 +32,7 @@ impl Control {
             Self::ZOffset => ("printer-z-offset", icons::SVG_Z_OFFSET, Some("Z")),
             Self::ClearPlate => ("printer-clear-plate", icons::SVG_CLEAR_PLATE, None),
             Self::AutoShutdown(_) => ("printer-auto-shutdown", icons::SVG_AUTO_SHUTDOWN, None),
+            Self::Name => ("printer-device-name", icons::SVG_PRINTER_NAME, None),
             _ => return None,
         };
         Some(HeaderAction { id, svg, badge })
@@ -92,13 +94,13 @@ impl MakerCalcGpuiApp {
                         t!("printers.controls.auto_shutdown_unknown").into_owned()
                     }
                     Some(ControlError::InvalidState)
-                        if matches!(choice.control, Control::AutoShutdown(_))
+                        if matches!(choice.control, Control::AutoShutdown(_) | Control::Name)
                             && status != crate::shared::printer::PrintStatus::Idle =>
                     {
-                        t!("printers.motion.not_idle").into_owned()
+                        t!("printers.materials.controls.not_idle").into_owned()
                     }
                     Some(ControlError::InvalidState)
-                        if matches!(choice.control, Control::AutoShutdown(_))
+                        if matches!(choice.control, Control::AutoShutdown(_) | Control::Name)
                             && machine.material_motion_idle.is_none() =>
                     {
                         t!("printers.controls.clear_plate_material_unknown").into_owned()

@@ -197,20 +197,28 @@ pub(crate) struct MachineInfo {
 }
 
 impl MachineInfo {
-    pub(crate) fn auto_shutdown_availability(
+    pub(crate) fn idle_setting_availability(
         &self,
         status: PrintStatus,
-        enabled: bool,
     ) -> Result<(), ControlError> {
         match self.material_motion_idle {
             Some(true) => {}
             Some(false) => return Err(ControlError::Busy),
             None => return Err(ControlError::InvalidState),
         }
-        if status != PrintStatus::Idle
-            || self.activity.is_some()
-            || self.auto_shutdown_enabled != Some(!enabled)
-        {
+        if status != PrintStatus::Idle || self.activity.is_some() {
+            return Err(ControlError::InvalidState);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn auto_shutdown_availability(
+        &self,
+        status: PrintStatus,
+        enabled: bool,
+    ) -> Result<(), ControlError> {
+        self.idle_setting_availability(status)?;
+        if self.auto_shutdown_enabled != Some(!enabled) {
             return Err(ControlError::InvalidState);
         }
         if enabled && self.auto_shutdown_delay_step_s.is_none_or(|step| step == 0) {

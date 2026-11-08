@@ -946,7 +946,6 @@ impl Projection {
                 | MachineAction::MoveAxisRelative { .. }
                 | MachineAction::ExtrudeFilament { .. }
                 | MachineAction::RunCalibration { .. }
-                | MachineAction::SetDeviceName { .. }
         );
         if needs_idle && (!idle || material_busy) {
             return Err(ControlError::InvalidState);
@@ -1118,7 +1117,15 @@ impl Projection {
                     json!({"automaticShutdown":open(*enabled),"shutdownAfterTime":minutes}),
                 )
             }
-            MachineAction::SetDeviceName { name } => ("reName_cmd", json!({"name":name})),
+            MachineAction::SetDeviceName { name } => {
+                detail
+                    .machine
+                    .idle_setting_availability(state.telemetry.print_state)?;
+                if super::map_status(self.status.as_deref()) != PrintStatus::Idle {
+                    return Err(ControlError::InvalidState);
+                }
+                ("reName_cmd", json!({"name":name}))
+            }
             MachineAction::SetDeviceProfileName { .. } => return Err(ControlError::Unsupported),
             MachineAction::SetFlowOverride { .. }
             | MachineAction::SetPressureAdvance { .. }
