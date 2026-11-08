@@ -629,6 +629,7 @@
       "calibration_home_required": "Ejecuta Home en X, Y y Z antes de calibrar.",
       "calibration_wait": "Espera a que la impresora indique que está lista para calibrar.",
       "calibrate_vibration": "Calibrar compensación de vibraciones",
+      "vibration_confirm": "Despeja el entorno de la impresora. Esta calibración mueve los ejes rápidamente.",
       "fan_power": "Potencia del ventilador (%)",
       "fan_switch": "Cambiar estado del ventilador",
       "extrude": "Extruir / retraer (mm)",

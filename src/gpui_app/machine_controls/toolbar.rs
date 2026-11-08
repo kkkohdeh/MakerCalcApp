@@ -11,13 +11,14 @@ use gpui_kit::{
     AnyElement, Context, IntoElement, ParentElement as _, Styled as _, Window, div, px,
 };
 
-const HEADER_CONTROLS: [Control; 6] = [
+const HEADER_CONTROLS: [Control; 7] = [
     Control::Speed,
     Control::ZOffset,
     Control::ClearPlate,
     Control::AutoShutdown(true),
     Control::Name,
     Control::Calibration(CalibrationKind::BedLeveling),
+    Control::Calibration(CalibrationKind::VibrationCompensation),
 ];
 
 struct HeaderAction {
@@ -36,6 +37,9 @@ impl Control {
             Self::Name => ("printer-device-name", icons::SVG_PRINTER_NAME, None),
             Self::Calibration(CalibrationKind::BedLeveling) => {
                 ("printer-level-bed", icons::SVG_LEVEL_BED, None)
+            }
+            Self::Calibration(CalibrationKind::VibrationCompensation) => {
+                ("printer-calibrate-vibration", icons::SVG_VIBRATION, None)
             }
             _ => return None,
         };
@@ -72,9 +76,7 @@ impl MakerCalcGpuiApp {
                 let (_, focus) = focus_handles.iter().find(|(name, _)| *name == header.id)?;
                 let blocked = availability(printer, choice.control, pending).err();
                 let hint = match blocked {
-                    Some(error)
-                        if choice.control == Control::Calibration(CalibrationKind::BedLeveling) =>
-                    {
+                    Some(error) if matches!(choice.control, Control::Calibration(_)) => {
                         calibration_block_message(printer, error)
                             .unwrap_or_else(|| materials::result_message(error))
                     }

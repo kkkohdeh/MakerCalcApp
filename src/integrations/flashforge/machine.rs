@@ -1101,16 +1101,14 @@ impl Projection {
                 ("stateCtrl_cmd", json!({"action":"setClearPlatform"}))
             }
             MachineAction::RunCalibration { kind } => {
-                if *kind == CalibrationKind::BedLeveling {
-                    detail
-                        .machine
-                        .idle_setting_availability(state.telemetry.print_state)?;
-                    detail
-                        .machine
-                        .calibration_readiness
-                        .ok_or(ControlError::InvalidState)?
-                        .check()?;
-                }
+                detail
+                    .machine
+                    .idle_setting_availability(state.telemetry.print_state)?;
+                detail
+                    .machine
+                    .calibration_readiness
+                    .ok_or(ControlError::InvalidState)?
+                    .check()?;
                 (
                     "calibration_cmd",
                     json!({"levelingDetection":open(*kind == CalibrationKind::BedLeveling),"vibrationCompensation":open(*kind == CalibrationKind::VibrationCompensation)}),
