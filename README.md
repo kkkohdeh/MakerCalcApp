@@ -36,28 +36,31 @@
 
 Windows 10 (version 1903 or later) or Windows 11, 64-bit. Release notes for every version are on the [Releases](https://github.com/kkkohdeh/MakerCalcApp/releases) page.
 
-Works today with **Klipper** printers (through Moonraker) and **FlashForge Adventurer 5M, 5M Pro and AD5X** on your local network.
+The v0.0.6 installer supports **Klipper** printers (through Moonraker) and **FlashForge Adventurer 5M, 5M Pro and AD5X** on your local network.
+
+Builds from the current source also support **Bambu Lab** over LAN. Open **Add printer**, select **Bambu Lab**, and enter the printer's IP address, serial number and LAN access code.
 
 ## How it works
 
 ### One language for every printer
 
-Every brand reports the same thing in its own way. MakerCalc translates each printer into one common language, so a Klipper machine and a FlashForge machine look the same in the app.
+MakerCalc translates readings from Klipper, FlashForge and Bambu Lab into the same status, temperature and progress displays.
 
 ```mermaid
 flowchart LR
     K["Klipper printer<br/>print_stats.state: printing<br/>extruder.temperature: 210"] --> M(("MakerCalc"))
     F["FlashForge printer<br/>status: printing<br/>rightTemp: 210"] --> M
+    B["Bambu Lab printer<br/>gcode_state: RUNNING<br/>nozzle_temper: 210"] --> M
     M --> C["Printing<br/>Nozzle 210 °C"]
 ```
 
 A few more examples of the same idea:
 
-| What you see | Klipper reports | FlashForge reports |
-|---|---|---|
-| Progress **42 %** | `virtual_sdcard.progress: 0.42` | `printProgress: 0.42` |
-| Bed **60 °C** | `heater_bed.temperature: 60` | `platTemp: 60` |
-| Time left **30 min** | *not reported* → no estimate shown | `estimatedTime: 1800` |
+| What you see | Klipper reports | FlashForge reports | Bambu Lab reports |
+|---|---|---|---|
+| Progress **42 %** | `virtual_sdcard.progress: 0.42` | `printProgress: 0.42` | `mc_percent: 42` |
+| Bed **60 °C** | `heater_bed.temperature: 60` | `platTemp: 60` | `bed_temper: 60` |
+| Time left **30 min** | *not reported* → no estimate shown | `estimatedTime: 1800` | `mc_remaining_time: 30` |
 
 MakerCalc never makes numbers up. If a printer doesn't report something, you see it as unavailable instead of a guess or a zero.
 
@@ -68,7 +71,7 @@ flowchart LR
     subgraph LAN["Your workshop network"]
         P1["Klipper printer"]
         P2["FlashForge printer"]
-        P3["More printers"]
+        P3["Bambu Lab printer"]
     end
     subgraph PC["Your Windows PC"]
         APP["MakerCalc app<br/>live view, controls<br/>and print history"]
@@ -101,7 +104,7 @@ flowchart LR
 - **Find printers** on your network automatically, search by IP, or add them by hand.
 - **See everything live:** status, progress, temperatures, fans, filament and camera, in cards that adapt to each printer.
 - **Control prints:** pause, resume and cancel.
-- **Send files:** browse the G-code stored on each printer, drag and drop new files and start a print.
+- **Send files:** browse stored G-code, drag and drop new files and start a print on printers that support file transfers.
 - **Manage filament:** load and unload it, and set its material and color, on printers that support it.
 - **Look back:** print history for each printer and for all of them, with search, filters and sorting.
 - **Stay informed:** Windows notifications when a print finishes, fails or loses connection. Turn them on in Settings.
@@ -162,7 +165,7 @@ No. The app works on its own with the printers on your network. The website is o
 No. It lets you know about new versions, and you choose when to install them.
 
 **My printer isn't on the list.**
-MakerCalc supports Klipper (Moonraker) and FlashForge Adventurer 5M, 5M Pro and AD5X today. If yours runs one of them and wasn't found, try **Search by IP** or add it by hand. Some printers don't announce themselves on the network.
+For Klipper and FlashForge, try **Search by IP** or add the printer manually. For Bambu Lab, use **Add printer** in a build from the current source.
 
 **Something isn't working.**
 [Open an issue](https://github.com/kkkohdeh/MakerCalcApp/issues) with your Windows version, your printer model and what happened. You can find the logs in **Settings → Diagnostics and logs → Open logs folder**.
