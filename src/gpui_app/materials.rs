@@ -414,6 +414,7 @@ pub(super) fn supply_cell(
             Button::new(("material-menu", resource.id.0 as usize))
                 .ghost()
                 .small()
+                .disabled(supply.state == SupplyState::Active || (items.is_empty() && !completed))
                 .label("⋯")
                 .accessibility_label(
                     t!("printers.materials.controls.menu", position = &position).into_owned(),
