@@ -319,6 +319,7 @@ fn light_buttons(id: LocalPrinterId, printer: &PrinterEntry, cx: &App) -> Vec<An
         .telemetry
         .lights
         .iter()
+        .filter(|light| printer.state.controls.allows_light(light.role))
         .map(|light| {
             let role = light.role;
             let sender = printer.actions.clone();

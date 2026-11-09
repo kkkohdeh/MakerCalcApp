@@ -12,7 +12,9 @@ use gpui_kit::{
 use crate::config::Protocol;
 use crate::edge::{EdgeAction, EdgeCommand};
 use crate::shared::printer::PrintStatus;
-use crate::shared::workspace::{PrinterAction, ResourceId, StartPrintOptions, Support};
+use crate::shared::workspace::{
+    PrintControlContext, PrinterAction, PrinterActionKind, ResourceId, StartPrintOptions, Support,
+};
 use crate::state::LocalPrinterId;
 
 use super::MakerCalcGpuiApp;
@@ -118,12 +120,19 @@ impl MakerCalcGpuiApp {
             return;
         };
         let pause = target.control == PrintControl::Pause;
+        let kind = if pause {
+            PrinterActionKind::PausePrint
+        } else {
+            PrinterActionKind::CancelPrint
+        };
+        let context = PrintControlContext::new(target.connection_epoch, target.job_generation);
         let is_same_execution = printer.session_generation == target.session_generation
             && printer.state.connection_epoch == target.connection_epoch
             && printer.state.job_generation == target.job_generation
             && printer.state.connection == crate::state::LanConnection::Connected
             && printer.state.telemetry_ready
             && !printer.operation_state.is_pending()
+            && printer.state.controls.allows_print(kind)
             && if pause {
                 printer.state.telemetry.print_state == PrintStatus::Printing
             } else {
@@ -153,10 +162,6 @@ impl MakerCalcGpuiApp {
             cx.notify();
             return;
         }
-        let context = crate::shared::workspace::PrintControlContext::new(
-            target.connection_epoch,
-            target.job_generation,
-        );
         let action = if pause {
             PrinterAction::PausePrint(context)
         } else {

@@ -88,6 +88,8 @@ fn controls(
     in_detail: bool,
     cx: &mut Context<MakerCalcGpuiApp>,
 ) -> Div {
+    use crate::shared::workspace::PrinterActionKind;
+
     let state = &printer.state;
     let active = printer.operation_state.allows_actions()
         && state.connection == LanConnection::Connected
@@ -101,6 +103,11 @@ fn controls(
         .items_center()
         .when(active, |row| {
             let paused = state.telemetry.print_state == PrintStatus::Paused;
+            let pause_or_resume = if paused {
+                PrinterActionKind::ResumePrint
+            } else {
+                PrinterActionKind::PausePrint
+            };
             let sender = printer.actions.clone();
             let disabled = !state.telemetry_ready || printer.operation_state.is_pending();
             let pause_label = if paused {
@@ -119,58 +126,64 @@ fn controls(
                 .and_then(|job| job.print_name.clone())
                 .unwrap_or_else(|| t!("printers.bay.current_job").into_owned());
             let pause_name = name.clone();
-            row.child(
-                Button::new(if in_detail {
-                    gpui_kit::ElementId::from("overview-pause")
-                } else {
-                    ("bay-pause", id.0 as usize).into()
-                })
-                .secondary()
-                .child(
-                    Icon::default()
-                        .data(if paused {
-                            web_icons::RESUME
-                        } else {
-                            web_icons::PAUSE
-                        })
-                        .size(px(14.)),
-                )
-                .size(px(26.))
-                .p_0()
-                .rounded(px(7.))
-                .tooltip(pause_label.clone())
-                .accessibility_label(pause_label)
-                .disabled(disabled)
-                .on_click(cx.listener(move |app, _, _, cx| {
-                    cx.stop_propagation();
-                    if paused {
-                        let _ = sender.try_send(PrinterAction::ResumePrint(
-                            crate::shared::workspace::PrintControlContext::new(epoch, generation),
-                        ));
+            row.when(state.controls.allows_print(pause_or_resume), |row| {
+                row.child(
+                    Button::new(if in_detail {
+                        gpui_kit::ElementId::from("overview-pause")
                     } else {
-                        app.request_pause_print(id, generation, pause_name.clone(), cx);
-                    }
-                })),
-            )
-            .child(
-                Button::new(if in_detail {
-                    gpui_kit::ElementId::from("overview-cancel")
-                } else {
-                    ("bay-cancel", id.0 as usize).into()
-                })
-                .child(Icon::default().data(web_icons::STOP).size(px(14.)))
-                .danger()
-                .size(px(26.))
-                .p_0()
-                .rounded(px(7.))
-                .tooltip(cancel_label.clone())
-                .accessibility_label(cancel_label)
-                .disabled(disabled)
-                .on_click(cx.listener(move |app, _, _, cx| {
-                    cx.stop_propagation();
-                    app.request_cancel_print(id, generation, name.clone(), cx);
-                })),
-            )
+                        ("bay-pause", id.0 as usize).into()
+                    })
+                    .secondary()
+                    .child(
+                        Icon::default()
+                            .data(if paused {
+                                web_icons::RESUME
+                            } else {
+                                web_icons::PAUSE
+                            })
+                            .size(px(14.)),
+                    )
+                    .size(px(26.))
+                    .p_0()
+                    .rounded(px(7.))
+                    .tooltip(pause_label.clone())
+                    .accessibility_label(pause_label)
+                    .disabled(disabled)
+                    .on_click(cx.listener(move |app, _, _, cx| {
+                        cx.stop_propagation();
+                        if paused {
+                            let _ = sender.try_send(PrinterAction::ResumePrint(
+                                crate::shared::workspace::PrintControlContext::new(
+                                    epoch, generation,
+                                ),
+                            ));
+                        } else {
+                            app.request_pause_print(id, generation, pause_name.clone(), cx);
+                        }
+                    })),
+                )
+            })
+            .when(state.controls.cancel, |row| {
+                row.child(
+                    Button::new(if in_detail {
+                        gpui_kit::ElementId::from("overview-cancel")
+                    } else {
+                        ("bay-cancel", id.0 as usize).into()
+                    })
+                    .child(Icon::default().data(web_icons::STOP).size(px(14.)))
+                    .danger()
+                    .size(px(26.))
+                    .p_0()
+                    .rounded(px(7.))
+                    .tooltip(cancel_label.clone())
+                    .accessibility_label(cancel_label)
+                    .disabled(disabled)
+                    .on_click(cx.listener(move |app, _, _, cx| {
+                        cx.stop_propagation();
+                        app.request_cancel_print(id, generation, name.clone(), cx);
+                    })),
+                )
+            })
         })
         .children(super::light_buttons(id, printer, cx))
 }

@@ -559,6 +559,7 @@ pub(super) fn dispatch_command(
     let state = printer.receiver.borrow();
     if state.connection != LanConnection::Connected
         || !state.telemetry_ready
+        || !state.controls.remote
         || printer.operation.state.borrow().is_pending()
         // A queued local/remote action also counts as busy, before the driver publishes Sending.
         || printer.operation.actions.capacity() < printer.operation.actions.max_capacity()

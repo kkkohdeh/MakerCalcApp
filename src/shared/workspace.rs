@@ -395,6 +395,43 @@ pub(crate) enum PrinterActionKind {
     MachineControl,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct PrinterControls {
+    pub(crate) pause: bool,
+    pub(crate) resume: bool,
+    pub(crate) cancel: bool,
+    pub(crate) build_area_light: bool,
+    pub(crate) toolhead_light: bool,
+    pub(crate) remote: bool,
+}
+
+impl PrinterControls {
+    pub(crate) const STANDARD: Self = Self {
+        pause: true,
+        resume: true,
+        cancel: true,
+        build_area_light: true,
+        toolhead_light: true,
+        remote: true,
+    };
+
+    pub(crate) fn allows_print(self, kind: PrinterActionKind) -> bool {
+        match kind {
+            PrinterActionKind::PausePrint => self.pause,
+            PrinterActionKind::ResumePrint => self.resume,
+            PrinterActionKind::CancelPrint => self.cancel,
+            _ => false,
+        }
+    }
+
+    pub(crate) fn allows_light(self, role: LightRole) -> bool {
+        match role {
+            LightRole::BuildArea => self.build_area_light,
+            LightRole::Toolhead => self.toolhead_light,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum HeaterKind {

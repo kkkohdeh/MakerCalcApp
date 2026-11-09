@@ -36,6 +36,7 @@ pub(crate) struct PrinterState {
     pub(crate) revision: u64,
     pub(crate) job_generation: u64,
     pub(crate) connection_epoch: u64,
+    pub(crate) controls: crate::shared::workspace::PrinterControls,
     pub(crate) snapshot: Option<Snapshot>,
     /// True only after a validated snapshot in the current LAN session.
     pub(crate) telemetry_ready: bool,
@@ -217,6 +218,7 @@ impl PrinterState {
         use crate::shared::workspace::PrinterActionKind as K;
         let now = Instant::now();
         self.connection == LanConnection::Connected
+            && self.controls.allows_print(kind)
             && self.telemetry_ready
             && self.connection_epoch == context.connection_epoch
             && self.job_generation == context.job_generation
@@ -247,6 +249,7 @@ impl PrinterState {
             revision: 0,
             job_generation: 0,
             connection_epoch: 0,
+            controls: crate::shared::workspace::PrinterControls::STANDARD,
             snapshot: None,
             telemetry_ready: false,
             telemetry: crate::shared::telemetry::PrinterTelemetry::default(),
