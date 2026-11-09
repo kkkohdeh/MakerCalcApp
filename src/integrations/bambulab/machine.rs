@@ -13,6 +13,7 @@ use crate::shared::machine::{
     SupplyKind, SupplyResource,
 };
 use crate::shared::printer::PrinterObservation;
+use crate::shared::telemetry::{ElementId, FilamentSupplyTelemetry};
 use crate::shared::workspace::{
     Capabilities, DetailState, Device, DeviceKind, ResourceId, Support,
 };
@@ -115,6 +116,10 @@ impl Projection {
     ) {
         let print = &report["print"];
         state.devices = self.devices(print, observation, model);
+        let station_sensors = self.ams_sensors(print);
+        state.machine.material_station_sensors =
+            station_sensors.iter().map(|device| device.id).collect();
+        state.devices.extend(station_sensors);
         state.machine.device = metadata(report, print, model);
         state.machine.activity = activity(print);
         state.machine.supplies = self.supplies(print, observation);
@@ -193,7 +198,6 @@ impl Projection {
             device.filament_present = sensor.filament_present;
             devices.push(device);
         }
-        devices.extend(self.ams_sensors(print));
         devices
     }
 
@@ -304,6 +308,7 @@ impl Projection {
         let trays: BTreeMap<_, _> = super::station_trays(print)
             .map(|tray| (tray.id.0, tray))
             .collect();
+        let externals = super::external_spools(print);
         readings
             .iter()
             .map(|reading| SupplyResource {
@@ -314,6 +319,11 @@ impl Projection {
                     SupplyKind::StationSlot
                 },
                 reading: reading.clone(),
+                remaining_pct: remaining_pct(
+                    reading,
+                    trays.get(&reading.id.0).map(|tray| tray.data),
+                    &externals,
+                ),
                 controls: Some(trays.get(&reading.id.0).map_or_else(Vec::new, |tray| {
                     super::control::supply_controls(print, tray, reading.filament_present)
                 })),
@@ -322,6 +332,25 @@ impl Projection {
             })
             .collect()
     }
+}
+
+fn remaining_pct(
+    reading: &FilamentSupplyTelemetry,
+    tray: Option<&Value>,
+    externals: &[(ElementId, &Value)],
+) -> Option<u8> {
+    let data = if let Some(tray) = tray {
+        (reading.filament_present == Some(true)).then_some(tray)?
+    } else {
+        if reading.filament_present == Some(false)
+            || (reading.material.is_none() && reading.is_active != Some(true))
+        {
+            return None;
+        }
+        externals.iter().find(|(id, _)| *id == reading.id)?.1
+    };
+    let remaining = super::integer(&data["remain"]).and_then(|value| u8::try_from(value).ok())?;
+    (remaining <= 100).then_some(remaining)
 }
 
 fn ams_name(id: i64) -> String {

@@ -611,6 +611,7 @@ impl Projection {
                         id: self.resource(Target::Slot(reading.id.0)),
                         kind: SupplyKind::StationSlot,
                         reading: reading.clone(),
+                        remaining_pct: None,
                         controls: None,
                         operation: station_operation
                             .filter(|(slot, _)| *slot == reading.id.0)
@@ -628,6 +629,7 @@ impl Projection {
                 info.supplies.push(SupplyResource {
                     id: self.resource(Target::ExternalSupply),
                     kind: SupplyKind::ExternalSpool,
+                    remaining_pct: None,
                     reading: FilamentSupplyTelemetry {
                         id: ElementId(1),
                         material: label(supply.material_name.as_deref(), 64),

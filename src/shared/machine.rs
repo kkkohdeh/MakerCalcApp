@@ -74,6 +74,9 @@ pub(crate) struct SupplyResource {
     pub(crate) id: ResourceId,
     pub(crate) kind: SupplyKind,
     pub(crate) reading: FilamentSupplyTelemetry,
+    /// Estimated filament remaining as a percentage of the spool's nominal fill.
+    #[serde(skip)]
+    pub(crate) remaining_pct: Option<u8>,
     /// None means capability discovery is incomplete; an empty list is verified read-only.
     pub(crate) controls: Option<Vec<SupplyControl>>,
     pub(crate) operation: Option<SupplyOperation>,
@@ -194,6 +197,8 @@ pub(crate) struct MachineInfo {
     pub(crate) auto_shutdown_delay_step_s: Option<u32>,
     pub(crate) activity: Option<MachineActivity>,
     pub(crate) material_station_slots: Option<u8>,
+    #[serde(skip)]
+    pub(crate) material_station_sensors: Vec<ResourceId>,
     #[serde(skip)]
     pub(crate) material_motion_idle: Option<bool>,
     /// True only when all reported access panels are closed; None means no confirmed sensor.

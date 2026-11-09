@@ -287,6 +287,9 @@
       "jobs": "Total jobs"
     },
     "materials": {
+      "humidity": "Humidity %{value}%",
+      "humidity_unit": "%{unit} · %{value}% RH",
+      "remaining_pct": "%{value}% remaining",
       "unloading": "Unloading…",
       "active": "Selected",
       "available": "Available",

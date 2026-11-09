@@ -169,11 +169,28 @@ pub(super) fn panel_header(
     printer: &PrinterEntry,
     cx: &mut Context<MakerCalcGpuiApp>,
 ) -> AnyElement {
-    let mut header = h_flex().items_center().justify_between().gap_2().child(
+    let header = h_flex().items_center().justify_between().gap_2().child(
         super::components::card::title(true)
             .text_color(cx.theme().muted_foreground)
             .child(t!("printers.overview.materials").into_owned()),
     );
+    let detail = &printer.detail_state;
+    let humidity: Vec<_> = detail
+        .devices
+        .iter()
+        .filter_map(|device| {
+            if !detail.machine.material_station_sensors.contains(&device.id) {
+                return None;
+            }
+            let value = device
+                .readings
+                .environment
+                .as_ref()?
+                .relative_humidity_pct?;
+            Some((&device.display_name, format!("{value:.0}")))
+        })
+        .collect();
+    let mut right = h_flex().items_center().justify_end().flex_wrap().gap_2();
     if printer.detail_state.machine.supplies.iter().any(|s| {
         s.controls
             .iter()
@@ -195,7 +212,7 @@ pub(super) fn panel_header(
         } else {
             availability(printer, target, K::UnloadFilament).err()
         };
-        header = header.child(action_button(
+        right = right.child(action_button(
             "material-unload-current".into(),
             target,
             K::UnloadFilament,
@@ -204,7 +221,22 @@ pub(super) fn panel_header(
             cx,
         ));
     }
-    header.into_any_element()
+    right = right.children(humidity.iter().map(|(unit, value)| {
+        let label = if humidity.len() == 1 {
+            t!("printers.materials.humidity", value = value)
+        } else {
+            t!(
+                "printers.materials.humidity_unit",
+                unit = *unit,
+                value = value
+            )
+        };
+        div()
+            .text_xs()
+            .text_color(cx.theme().muted_foreground)
+            .child(label.into_owned())
+    }));
+    header.child(right).into_any_element()
 }
 
 pub(super) fn parse_hex_color(hex: &str) -> Option<Hsla> {
@@ -455,6 +487,9 @@ pub(super) fn supply_cell(
             .border_color(cx.theme().muted_foreground),
     };
     let mut details = Vec::new();
+    if let Some(value) = resource.and_then(|resource| resource.remaining_pct) {
+        details.push(t!("printers.materials.remaining_pct", value = value).into_owned());
+    }
     if supply.state == SupplyState::Unknown {
         if let Some(present) = supply.filament_present {
             details.push(
