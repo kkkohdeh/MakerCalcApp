@@ -107,6 +107,34 @@ pub(crate) enum Protocol {
     #[default]
     Moonraker,
     Flashforge,
+    Bambulab,
+}
+
+pub(crate) fn bambu_port_suggestion(
+    previous: Protocol,
+    next: Protocol,
+    port: &str,
+) -> Option<&'static str> {
+    match (previous, next, port.trim()) {
+        (Protocol::Bambulab, Protocol::Bambulab, _) => None,
+        (_, Protocol::Bambulab, "" | "7125" | "8898" | "8899") => Some("8883"),
+        (Protocol::Bambulab, _, "8883") => Some("7125"),
+        _ => None,
+    }
+}
+
+pub(crate) fn bambu_credentials(value: &str) -> Option<(&str, &str)> {
+    let (serial, code) = value.split_once(':')?;
+    let (serial, code) = (serial.trim(), code.trim());
+    (!serial.is_empty()
+        && serial.len() <= 63
+        && serial.bytes().all(|byte| byte.is_ascii_alphanumeric())
+        && !code.is_empty()
+        && code.len() <= 64
+        && code
+            .bytes()
+            .all(|byte| byte.is_ascii_graphic() && byte != b':'))
+    .then_some((serial, code))
 }
 
 impl std::fmt::Display for Protocol {
@@ -114,6 +142,7 @@ impl std::fmt::Display for Protocol {
         match self {
             Self::Moonraker => write!(f, "Moonraker / Klipper"),
             Self::Flashforge => write!(f, "FlashForge (Adventurer 5M / AD5X)"),
+            Self::Bambulab => write!(f, "Bambu Lab"),
         }
     }
 }
@@ -238,10 +267,14 @@ impl PersistedConfig {
                 Protocol::Moonraker
             });
         let auth = match (protocol, draft.trusted_lan, draft.api_key) {
-            (Protocol::Flashforge, _, Some(key)) => MoonrakerAuth::ApiKey {
+            (Protocol::Bambulab, _, Some(key)) if bambu_credentials(&key).is_none() => {
+                return Err(bambu_credential_error());
+            }
+            (Protocol::Flashforge | Protocol::Bambulab, _, Some(key)) => MoonrakerAuth::ApiKey {
                 secret_dpapi: protect_secret(key.as_bytes())?,
             },
             (Protocol::Flashforge, _, None) => MoonrakerAuth::TrustedLan,
+            (Protocol::Bambulab, _, None) => return Err(bambu_credential_error()),
             (Protocol::Moonraker, true, None) => MoonrakerAuth::TrustedLan,
             (Protocol::Moonraker, false, Some(api_key)) => MoonrakerAuth::ApiKey {
                 secret_dpapi: protect_secret(api_key.as_bytes())?,
@@ -312,11 +345,11 @@ impl PersistedConfig {
             ));
         }
 
-        let existing_auth = self
+        let (existing_protocol, existing_auth) = self
             .printers
             .iter()
             .find(|printer| printer.local_id == id)
-            .map(|printer| printer.connection.auth.clone())
+            .map(|printer| (printer.connection.protocol, printer.connection.auth.clone()))
             .ok_or_else(|| ConfigError::Validation("la impresora ya no existe".to_owned()))?;
 
         let protocol = draft
@@ -328,7 +361,10 @@ impl PersistedConfig {
             });
 
         let auth = match (protocol, draft.trusted_lan, draft.api_key) {
-            (Protocol::Flashforge, _, Some(key)) if !key.trim().is_empty() => {
+            (Protocol::Bambulab, _, Some(key)) if bambu_credentials(&key).is_none() => {
+                return Err(bambu_credential_error());
+            }
+            (Protocol::Flashforge | Protocol::Bambulab, _, Some(key)) if !key.trim().is_empty() => {
                 validate_secret_header_value(&key)?;
                 MoonrakerAuth::ApiKey {
                     secret_dpapi: protect_secret(key.as_bytes())?,
@@ -336,6 +372,13 @@ impl PersistedConfig {
             }
             (Protocol::Flashforge, _, Some(_)) => MoonrakerAuth::TrustedLan,
             (Protocol::Flashforge, _, None) => existing_auth,
+            (Protocol::Bambulab, _, None)
+                if existing_protocol == Protocol::Bambulab
+                    && matches!(existing_auth, MoonrakerAuth::ApiKey { .. }) =>
+            {
+                existing_auth
+            }
+            (Protocol::Bambulab, _, _) => return Err(bambu_credential_error()),
             (Protocol::Moonraker, true, None) => MoonrakerAuth::TrustedLan,
             (Protocol::Moonraker, false, Some(api_key)) => {
                 validate_secret_header_value(&api_key)?;
@@ -715,6 +758,12 @@ fn validate_host(host: &str) -> Result<(), ConfigError> {
         ));
     }
     Ok(())
+}
+
+fn bambu_credential_error() -> ConfigError {
+    ConfigError::Validation(
+        crate::i18n::t!("printers.form.errors.access_code_required").into_owned(),
+    )
 }
 
 fn validate_secret_header_value(value: &str) -> Result<(), ConfigError> {

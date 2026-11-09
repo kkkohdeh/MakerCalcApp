@@ -457,7 +457,12 @@ pub(in crate::gpui_app) fn cards(printer: &PrinterEntry) -> Vec<Card<'_>> {
             detail
                 .devices
                 .iter()
-                .filter(|device| device.kind == DeviceKind::TemperatureSensor)
+                .filter(|device| {
+                    matches!(
+                        device.kind,
+                        DeviceKind::TemperatureSensor | DeviceKind::ChamberSensor
+                    )
+                })
                 .map(|device| {
                     let environment = device.readings.environment.as_ref();
                     EnvironmentFact {

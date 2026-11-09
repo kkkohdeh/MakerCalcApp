@@ -89,7 +89,8 @@ fn controls(
     cx: &mut Context<MakerCalcGpuiApp>,
 ) -> Div {
     let state = &printer.state;
-    let active = state.connection == LanConnection::Connected
+    let active = printer.operation_state.allows_actions()
+        && state.connection == LanConnection::Connected
         && matches!(
             state.telemetry.print_state,
             PrintStatus::Printing | PrintStatus::Paused
@@ -406,6 +407,7 @@ fn footer(printer: &PrinterEntry, cx: &App) -> Div {
     let protocol = match printer.protocol {
         Protocol::Moonraker => "Klipper",
         Protocol::Flashforge => "FlashForge",
+        Protocol::Bambulab => "Bambu Lab",
     };
     let protocol_port = t!(
         "printers.bay.protocol_port",

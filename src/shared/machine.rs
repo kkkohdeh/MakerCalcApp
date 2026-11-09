@@ -53,6 +53,8 @@ pub(crate) enum FanRole {
     Chamber,
     Exhaust,
     Recirculation,
+    /// Part cooling mounted off the toolhead, in addition to the part cooling fan.
+    Auxiliary,
     #[default]
     Unknown,
 }

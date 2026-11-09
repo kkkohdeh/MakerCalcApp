@@ -311,6 +311,9 @@ pub(super) fn retained_reading_label(
 }
 
 fn light_buttons(id: LocalPrinterId, printer: &PrinterEntry, cx: &App) -> Vec<AnyElement> {
+    if !printer.operation_state.allows_actions() {
+        return Vec::new();
+    }
     printer
         .state
         .telemetry

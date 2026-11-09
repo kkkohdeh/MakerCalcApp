@@ -175,7 +175,7 @@ pub(super) fn device_name(device: &Device, devices: &[Device], locale: &str) -> 
     let key_for = |device: &Device| match device.kind {
         DeviceKind::Nozzle => Some("printers.overview.nozzle"),
         DeviceKind::Bed => Some("printers.overview.bed"),
-        DeviceKind::ChamberHeater => Some("printers.overview.chamber"),
+        DeviceKind::ChamberHeater | DeviceKind::ChamberSensor => Some("printers.overview.chamber"),
         DeviceKind::MotionSettings => Some(match device.motion_source {
             Some(crate::shared::machine::MotionSource::CommandInterpreter) => {
                 "printers.overview.technical.command_coordinates"

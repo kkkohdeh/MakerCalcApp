@@ -177,6 +177,12 @@ pub(in crate::gpui_app) fn device_name(
         DeviceKind::Fan => fan_name(device.fan_role, &device.display_name, locale),
         DeviceKind::Nozzle => t!("printers.overview.nozzle", locale = locale).into_owned(),
         DeviceKind::Bed => t!("printers.overview.bed", locale = locale).into_owned(),
+        DeviceKind::ChamberHeater | DeviceKind::ChamberSensor => {
+            t!("printers.overview.chamber", locale = locale).into_owned()
+        }
+        DeviceKind::FilamentSensor if device.display_name.is_empty() => {
+            t!("printers.overview.filament_sensor", locale = locale).into_owned()
+        }
         _ => device.display_name.clone(),
     };
     let label = base(device);
@@ -208,6 +214,7 @@ pub(in crate::gpui_app) fn fan_name(
         Some(FanRole::Chamber) => "printers.overview.fan_chamber",
         Some(FanRole::Exhaust) => "printers.overview.fan_exhaust",
         Some(FanRole::Recirculation) => "printers.overview.fan_recirculation",
+        Some(FanRole::Auxiliary) => "printers.overview.fan_auxiliary",
         _ if !name.is_empty() => return name.to_owned(),
         _ => "printers.overview.fan",
     };
@@ -288,10 +295,12 @@ pub(in crate::gpui_app::overview) fn omit_summary_fields(
                 }
             }
             Content::Environment(_) => {
-                for device in devices
-                    .iter()
-                    .filter(|d| d.kind == DeviceKind::TemperatureSensor)
-                {
+                for device in devices.iter().filter(|d| {
+                    matches!(
+                        d.kind,
+                        DeviceKind::TemperatureSensor | DeviceKind::ChamberSensor
+                    )
+                }) {
                     for key in ["temperature", "humidity", "pressure"] {
                         shown.insert((device.id, key));
                     }

@@ -100,6 +100,7 @@ pub(crate) enum DeviceKind {
     Nozzle,
     Bed,
     TemperatureSensor,
+    ChamberSensor,
     ChamberHeater,
     Fan,
     FilamentSensor,
@@ -507,6 +508,7 @@ impl PrinterAction {
 #[derive(Clone, Debug)]
 pub(crate) enum OperationState {
     Idle,
+    ReadOnly,
     Sending(PrinterActionKind),
     Accepted(PrinterActionKind),
     Rejected {
@@ -518,6 +520,10 @@ pub(crate) enum OperationState {
 impl OperationState {
     pub(crate) fn is_pending(&self) -> bool {
         matches!(self, Self::Sending(_))
+    }
+
+    pub(crate) fn allows_actions(&self) -> bool {
+        !matches!(self, Self::ReadOnly)
     }
 }
 #[derive(Clone)]
@@ -546,6 +552,9 @@ impl OperationHandle {
     {
         use super::control::{ControlError, MachineCommand};
         action.validate()?;
+        if !self.state.borrow().allows_actions() {
+            return Err(ControlError::Unsupported);
+        }
         if self.state.borrow().is_pending() {
             return Err(ControlError::Busy);
         }

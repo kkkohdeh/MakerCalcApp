@@ -239,15 +239,31 @@ impl MakerCalcGpuiApp {
         }
     }
 
-    pub(super) fn set_form_protocol(&mut self, index: usize, cx: &mut Context<Self>) {
+    pub(super) fn set_form_protocol(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(form) = self.printer_form.as_mut() {
-            form.protocol = if index == 1 {
-                Protocol::Flashforge
-            } else {
-                Protocol::Moonraker
+            let previous = form.protocol;
+            form.protocol = match index {
+                1 => Protocol::Flashforge,
+                2 => Protocol::Bambulab,
+                _ => Protocol::Moonraker,
             };
-            if form.protocol == Protocol::Flashforge {
+            if form.protocol != Protocol::Moonraker {
                 form.tls = false;
+            }
+            if form.editing.is_none()
+                && let Some(port) = crate::config::bambu_port_suggestion(
+                    previous,
+                    form.protocol,
+                    &form.port.read(cx).value(),
+                )
+            {
+                form.port
+                    .update(cx, |input, cx| input.set_value(port, window, cx));
             }
             cx.notify();
         }
@@ -293,7 +309,7 @@ impl MakerCalcGpuiApp {
                 };
                 (form.trusted_lan, api_key)
             }
-            Protocol::Flashforge => {
+            Protocol::Flashforge | Protocol::Bambulab => {
                 let serial = value(&form.serial_number);
                 let code = value(&form.check_code);
                 let s_trim = serial.trim();
@@ -320,6 +336,14 @@ impl MakerCalcGpuiApp {
                             return;
                         }
                     }
+                } else if form.protocol == Protocol::Bambulab {
+                    if s_trim.is_empty() || c_trim.is_empty() {
+                        self.mutation_error =
+                            Some(t!("printers.form.errors.access_code_required").into_owned());
+                        cx.notify();
+                        return;
+                    }
+                    (false, Some(format!("{s_trim}:{c_trim}")))
                 } else {
                     match (s_trim.is_empty(), c_trim.is_empty()) {
                         (true, true) => (true, None),
@@ -474,10 +498,24 @@ impl MakerCalcGpuiApp {
                 t!("printers.form.add_title").into_owned()
             }
         };
-        let protocol_index = usize::from(form.protocol == Protocol::Flashforge);
+        let protocol_index = match form.protocol {
+            Protocol::Moonraker => 0,
+            Protocol::Flashforge => 1,
+            Protocol::Bambulab => 2,
+        };
+        let protocol_options = ["Moonraker / Klipper", "FlashForge", "Bambu Lab"]
+            .into_iter()
+            .enumerate()
+            .map(|(index, label)| Radio::new(index).label(label));
+        let code_label = if form.protocol == Protocol::Bambulab {
+            t!("printers.form.access_code.label")
+        } else {
+            t!("printers.form.check_code.label")
+        }
+        .into_owned();
         let is_discovered = form.discovered.is_some();
         let destination_locked = self.mutation_pending || is_discovered;
-        let credentials = if form.protocol == Protocol::Flashforge {
+        let credentials = if form.protocol != Protocol::Moonraker {
             v_flex()
                 .gap_3()
                 .when(form.credential_rejected, |col| {
@@ -513,11 +551,11 @@ impl MakerCalcGpuiApp {
                     Field::new("field-printer-check-code")
                         .focus(form.check_code.focus_handle(cx))
                         .disabled(self.mutation_pending)
-                        .label(t!("printers.form.check_code.label").into_owned())
+                        .label(code_label.clone())
                         .child(
                             Input::new(&form.check_code)
                                 .id("printer-form-check-code")
-                                .aria_label(t!("printers.form.check_code.label").into_owned())
+                                .aria_label(code_label)
                                 .disabled(self.mutation_pending),
                         ),
                 )
@@ -733,19 +771,16 @@ impl MakerCalcGpuiApp {
                                             .label(t!("printers.form.protocol").into_owned())
                                             .child(
                                                 RadioGroup::new("printer-protocol")
-                                                    .children(
-                                                        ["Moonraker / Klipper", "FlashForge"]
-                                                            .into_iter()
-                                                            .enumerate()
-                                                            .map(|(index, text)| {
-                                                                Radio::new(index).label(text)
-                                                            }),
-                                                    )
+                                                    .children(protocol_options)
                                                     .selected_index(Some(protocol_index))
                                                     .disabled(destination_locked)
-                                                    .on_change(cx.listener(|app, index, _, cx| {
-                                                        app.set_form_protocol(*index, cx);
-                                                    })),
+                                                    .on_change(cx.listener(
+                                                        |app, index, window, cx| {
+                                                            app.set_form_protocol(
+                                                                *index, window, cx,
+                                                            );
+                                                        },
+                                                    )),
                                             ),
                                     )
                                     .child(
@@ -817,49 +852,31 @@ impl MakerCalcGpuiApp {
                                     error,
                                     cx,
                                 ))
-                            })
-                            .when_some(
-                                form.duplicate_match.clone(),
-                                |panel, (existing_id, existing_name)| {
-                                    panel.child(
-                                        h_flex()
-                                            .gap_2()
-                                            .items_center()
-                                            .child(
-                                                Button::new("open-existing-duplicate-printer")
-                                                    .outline()
-                                                    .small()
-                                                    .label(
-                                                        t!(
-                                                            "printers.form.edit_existing",
-                                                            name = existing_name
-                                                        )
-                                                        .into_owned(),
-                                                    )
-                                                    .disabled(self.mutation_pending)
-                                                    .on_click(cx.listener(
-                                                        move |app, _, window, cx| {
-                                                            app.open_edit_printer(
-                                                                existing_id,
-                                                                window,
-                                                                cx,
-                                                            );
-                                                        },
-                                                    )),
-                                            )
-                                            .child(
-                                                div()
-                                                    .text_xs()
-                                                    .text_color(cx.theme().muted_foreground)
-                                                    .child(
-                                                        t!("printers.form.keep_identity")
-                                                            .into_owned(),
-                                                    ),
-                                            ),
-                                    )
-                                },
-                            ),
+                            }),
                     )
+                    .when_some(form.duplicate_match.clone(), |dialog, (id, name)| {
+                        dialog.child(
+                            h_flex()
+                                .gap_2()
+                                .items_center()
+                                .child(
+                                    Button::new("open-existing-duplicate-printer")
+                                        .outline()
+                                        .small()
+                                        .label(t!("printers.form.edit_existing", name = name))
+                                        .disabled(self.mutation_pending)
+                                        .on_click(cx.listener(move |app, _, window, cx| {
+                                            app.open_edit_printer(id, window, cx);
+                                        })),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(t!("printers.form.keep_identity")),
+                                ),
+                        )
+                    })
                     .child(
                         dialog::footer(window, cx)
                             .id("printer-form-footer")

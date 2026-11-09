@@ -678,7 +678,7 @@ pub(super) fn cards(printer: &PrinterEntry) -> Vec<Card<'_>> {
     for device in &detail.devices {
         let group = match device.kind {
             DeviceKind::Nozzle | DeviceKind::Bed | DeviceKind::ChamberHeater => Group::Heaters,
-            DeviceKind::TemperatureSensor => Group::Sensors,
+            DeviceKind::TemperatureSensor | DeviceKind::ChamberSensor => Group::Sensors,
             DeviceKind::Fan => Group::Fans,
             DeviceKind::Motion | DeviceKind::MotionSettings => Group::Motion,
             DeviceKind::Extrusion => Group::Extrusion,

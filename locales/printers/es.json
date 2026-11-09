@@ -184,6 +184,9 @@
         "placeholder": "Número de serie",
         "label": "Número de serie (SN)"
       },
+      "access_code": {
+        "label": "Código de acceso (Access Code)"
+      },
       "check_code": {
         "placeholder": "Código de verificación",
         "label": "Código de verificación / checkCode"
@@ -199,8 +202,10 @@
         "port": "El puerto debe estar entre 1 y 65535",
         "api_mask": "No ingreses la máscara como API key",
         "credential_mask": "No ingreses la máscara como credencial",
+        "access_code_required": "Indica el número de serie y el código de acceso de la impresora Bambu Lab",
+        "bambulab_manual": "Las impresoras Bambu Lab se agregan desde el formulario manual",
         "colon": "Las credenciales no deben contener ':'",
-        "credentials_pair": "Para actualizar las credenciales de FlashForge debes completar tanto el número de serie como el código de verificación, o dejarlos ambos vacíos para conservar los actuales.",
+        "credentials_pair": "Para actualizar las credenciales debes completar tanto el número de serie como el código, o dejarlos ambos vacíos para conservar los actuales.",
         "serial_required": "Debes indicar el número de serie de la impresora FlashForge"
       },
       "saved": "Impresora actualizada",
@@ -399,6 +404,7 @@
       "fan_chamber": "Ventilador de cabina",
       "fan_exhaust": "Extracción",
       "fan_recirculation": "Recirculación",
+      "fan_auxiliary": "Ventilador auxiliar",
       "on": "Encendido",
       "off": "Apagado",
       "enabled": "Activado",
@@ -701,6 +707,17 @@
       "flow_calibration": "Calibrar flujo antes de imprimir",
       "timelapse": "Grabar timelapse",
       "unsupported": "La impresora no anuncia la opción de impresión solicitada."
+    },
+    "bambulab": {
+      "errors": {
+        "credentials": "Falta el número de serie o el código de acceso de la impresora Bambu Lab",
+        "rejected": "La impresora rechazó el código de acceso",
+        "network": "No se pudo conectar con la impresora: %{detail}",
+        "tls": "No se pudo verificar el certificado de la impresora: %{detail}",
+        "protocol": "La impresora envió una respuesta MQTT inválida: %{detail}",
+        "stale": "La impresora dejó de enviar su estado",
+        "invalid_report": "La impresora envió un estado imposible: %{detail}"
+      }
     }
   }
 }

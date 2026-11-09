@@ -299,6 +299,10 @@ pub(crate) async fn verify_discovered_printer(
             candidate,
             draft.api_key.as_deref(),
         )?,
+        // Network discovery never offers Bambu Lab; it is added from the manual form.
+        Protocol::Bambulab => {
+            return Err(crate::i18n::t!("printers.form.errors.bambulab_manual").into_owned());
+        }
     };
     let response = request
         .send()
@@ -311,6 +315,7 @@ pub(crate) async fn verify_discovered_printer(
     let valid = match candidate.protocol {
         Protocol::Moonraker => crate::integrations::moonraker::adapter::verify_response(&body),
         Protocol::Flashforge => crate::integrations::flashforge::verify_response(&body),
+        Protocol::Bambulab => false,
     };
     if valid {
         Ok(())
@@ -589,7 +594,10 @@ impl EdgeActor {
         initial_state.notifications = Some(capture.clone());
         let cloud_id = derived_cloud_printer_id(&self.config.installation_id, printer.local_id);
         let history = self.history.handle();
-        if printer.connection.protocol == Protocol::Flashforge {
+        if matches!(
+            printer.connection.protocol,
+            Protocol::Flashforge | Protocol::Bambulab
+        ) {
             initial_state.history_capture = Some(history.capture(cloud_id));
         } else {
             initial_state.native_history = Some(crate::history::NativeHistory {
@@ -612,37 +620,55 @@ impl EdgeActor {
         let (operation, operation_io) = make_operation_channels();
         let (camera, camera_io) = make_camera_channels();
         let (thumbnail, thumbnail_io) = crate::shared::thumbnail::make_thumbnail_channels();
-        let join = if printer.connection.protocol == crate::config::Protocol::Flashforge {
-            self.runtime
-                .spawn(crate::integrations::flashforge::run_driver_with_thumbnail(
-                    printer.local_id,
-                    printer.connection.host,
-                    printer.connection.port,
+        let join = match printer.connection.protocol {
+            Protocol::Flashforge => {
+                self.runtime
+                    .spawn(crate::integrations::flashforge::run_driver_with_thumbnail(
+                        printer.local_id,
+                        printer.connection.host,
+                        printer.connection.port,
+                        api_key,
+                        state_sender,
+                        driver_shutdown,
+                        detail_io,
+                        operation_io,
+                        thumbnail_io,
+                        camera_io,
+                    ))
+            }
+            Protocol::Bambulab => {
+                operation_io
+                    .state
+                    .send_replace(crate::shared::workspace::OperationState::ReadOnly);
+                drop((operation_io, camera_io, thumbnail_io));
+                self.runtime
+                    .spawn(crate::integrations::bambulab::run_driver(
+                        printer.connection.host,
+                        printer.connection.port,
+                        api_key,
+                        state_sender,
+                        driver_shutdown,
+                        detail_io,
+                    ))
+            }
+            Protocol::Moonraker => {
+                let config = DriverConfig {
+                    id: printer.local_id,
+                    connection: printer.connection,
                     api_key,
-                    state_sender,
-                    driver_shutdown,
-                    detail_io,
-                    operation_io,
-                    thumbnail_io,
-                    camera_io,
-                ))
-        } else {
-            let config = DriverConfig {
-                id: printer.local_id,
-                connection: printer.connection,
-                api_key,
-            };
-            self.runtime.spawn(
-                crate::integrations::moonraker::adapter::run_adapter_with_thumbnail(
-                    config,
-                    state_sender,
-                    driver_shutdown,
-                    detail_io,
-                    operation_io,
-                    camera_io,
-                    thumbnail_io,
-                ),
-            )
+                };
+                self.runtime.spawn(
+                    crate::integrations::moonraker::adapter::run_adapter_with_thumbnail(
+                        config,
+                        state_sender,
+                        driver_shutdown,
+                        detail_io,
+                        operation_io,
+                        camera_io,
+                        thumbnail_io,
+                    ),
+                )
+            }
         };
         self.drivers.insert(
             printer.local_id,
@@ -797,9 +823,13 @@ pub(crate) fn cloud_device_metadata(
     printer: &PrinterConfig,
     secret: Option<&str>,
 ) -> Option<crate::shared::printer::CloudDeviceMetadata> {
-    let serial_suffix = (printer.connection.protocol == Protocol::Flashforge)
-        .then(|| flashforge_serial_suffix(secret))
-        .flatten();
+    // Both store `serial:code`; the suffix comes from the configured serial.
+    let serial_suffix = matches!(
+        printer.connection.protocol,
+        Protocol::Flashforge | Protocol::Bambulab
+    )
+    .then(|| flashforge_serial_suffix(secret))
+    .flatten();
     let local_ip = private_local_ip(&printer.connection.host);
     if serial_suffix.is_none() && local_ip.is_none() {
         None

@@ -131,6 +131,7 @@ const fn integration_key(protocol: Protocol) -> &'static str {
     match protocol {
         Protocol::Moonraker => "moonraker",
         Protocol::Flashforge => "flashforge",
+        Protocol::Bambulab => "bambulab",
     }
 }
 
@@ -190,7 +191,7 @@ pub(super) fn log_connection_change(printer: &PrinterEntry, previous: LanConnect
 
 pub(super) fn log_operation_state(printer: &PrinterEntry) {
     let event = match &printer.operation_state {
-        OperationState::Idle => return,
+        OperationState::Idle | OperationState::ReadOnly => return,
         OperationState::Sending(action) => {
             LogEvent::new(LogLevel::Info, LogArea::Action, "action.requested")
                 .action(action_key(*action))
@@ -218,7 +219,8 @@ pub(super) fn log_operation_state(printer: &PrinterEntry) {
 
 pub(super) fn operation_state_eq(left: &OperationState, right: &OperationState) -> bool {
     match (left, right) {
-        (OperationState::Idle, OperationState::Idle) => true,
+        (OperationState::Idle, OperationState::Idle)
+        | (OperationState::ReadOnly, OperationState::ReadOnly) => true,
         (OperationState::Sending(a), OperationState::Sending(b))
         | (OperationState::Accepted(a), OperationState::Accepted(b))
         | (OperationState::Unknown(a), OperationState::Unknown(b)) => a == b,

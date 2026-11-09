@@ -184,6 +184,9 @@
         "placeholder": "Serial number",
         "label": "Serial number (SN)"
       },
+      "access_code": {
+        "label": "Access code"
+      },
       "check_code": {
         "placeholder": "Verification code",
         "label": "Verification code / checkCode"
@@ -199,8 +202,10 @@
         "port": "Port must be between 1 and 65535",
         "api_mask": "Do not enter the mask as an API key",
         "credential_mask": "Do not enter the mask as a credential",
+        "access_code_required": "Enter the Bambu Lab printer's serial number and access code",
+        "bambulab_manual": "Bambu Lab printers are added from the manual form",
         "colon": "Credentials must not contain ':'",
-        "credentials_pair": "To update FlashForge credentials, enter both the serial number and verification code, or leave both blank to keep the current ones.",
+        "credentials_pair": "To update the credentials, enter both the serial number and the code, or leave both blank to keep the current ones.",
         "serial_required": "Enter the FlashForge printer's serial number"
       },
       "saved": "Printer updated",
@@ -399,6 +404,7 @@
       "fan_chamber": "Chamber fan",
       "fan_exhaust": "Exhaust",
       "fan_recirculation": "Recirculation",
+      "fan_auxiliary": "Auxiliary fan",
       "on": "On",
       "off": "Off",
       "enabled": "Enabled",
@@ -701,6 +707,17 @@
       "flow_calibration": "Calibrate flow before printing",
       "timelapse": "Record timelapse",
       "unsupported": "The printer does not advertise the requested print option."
+    },
+    "bambulab": {
+      "errors": {
+        "credentials": "The Bambu Lab printer's serial number or access code is missing",
+        "rejected": "The printer rejected the access code",
+        "network": "Could not connect to the printer: %{detail}",
+        "tls": "Could not verify the printer certificate: %{detail}",
+        "protocol": "The printer sent an invalid MQTT response: %{detail}",
+        "stale": "The printer stopped sending its status",
+        "invalid_report": "The printer sent an impossible state: %{detail}"
+      }
     }
   }
 }
