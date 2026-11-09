@@ -31,14 +31,14 @@
 ## Download
 
 <p>
-  <a href="https://github.com/kkkohdeh/MakerCalcApp/releases/download/v0.0.6/MakerCalc-Setup-0.0.6-windows-x64.exe"><img src="https://img.shields.io/badge/Download-MakerCalc%20for%20Windows-111827?style=for-the-badge" alt="Download MakerCalc for Windows"></a>
+  <a href="https://github.com/kkkohdeh/MakerCalcApp/releases/download/v0.0.7/MakerCalc-Setup.exe"><img src="https://img.shields.io/badge/Download-MakerCalc%20for%20Windows-111827?style=for-the-badge" alt="Download MakerCalc for Windows"></a>
 </p>
 
 Windows 10 (version 1903 or later) or Windows 11, 64-bit. Release notes for every version are on the [Releases](https://github.com/kkkohdeh/MakerCalcApp/releases) page.
 
-The v0.0.6 installer supports **Klipper** printers (through Moonraker) and **FlashForge Adventurer 5M, 5M Pro and AD5X** on your local network.
+MakerCalc supports **Klipper** printers (through Moonraker), **FlashForge Adventurer 5M, 5M Pro and AD5X**, and **Bambu Lab** printers on your local network.
 
-Builds from the current source also support **Bambu Lab** over LAN. Open **Add printer**, select **Bambu Lab**, and enter the printer's IP address, serial number and LAN access code.
+For Bambu Lab, open **Add printer**, select **Bambu Lab**, and enter the printer's IP address, serial number and LAN access code.
 
 ## How it works
 
@@ -117,7 +117,7 @@ flowchart LR
 
 ## Install
 
-1. Download [`MakerCalc-Setup-0.0.6-windows-x64.exe`](https://github.com/kkkohdeh/MakerCalcApp/releases/download/v0.0.6/MakerCalc-Setup-0.0.6-windows-x64.exe).
+1. Download [`MakerCalc-Setup.exe`](https://github.com/kkkohdeh/MakerCalcApp/releases/download/v0.0.7/MakerCalc-Setup.exe).
 2. Run it. It installs for your user only and doesn't ask for administrator rights.
 3. The installer isn't digitally signed yet, so Windows may show *"Windows protected your PC"*. Click **More info → Run anyway**. Only download MakerCalc from this page.
 
@@ -127,16 +127,16 @@ flowchart LR
 Every release includes `checksums.sha256`. In PowerShell, from the folder where you saved the installer:
 
 ```powershell
-Get-FileHash .\MakerCalc-Setup-0.0.6-windows-x64.exe -Algorithm SHA256
+Get-FileHash .\MakerCalc-Setup.exe -Algorithm SHA256
 ```
 
-The result must match the `MakerCalc-Setup-0.0.6-windows-x64.exe` line in `checksums.sha256`.
+The result must match the `MakerCalc-Setup.exe` line in `checksums.sha256`.
 
 </details>
 
 ### Updating
 
-Check [Releases](https://github.com/kkkohdeh/MakerCalcApp/releases) for updates. The update checker in 0.0.5-beta looks for the old installer filename. When upgrading to 0.0.6, the previous settings and history remain in the old data folder. See the release notes for details.
+When MakerCalc finds an update, open the release page and run `MakerCalc-Setup.exe`. You can also check [Releases](https://github.com/kkkohdeh/MakerCalcApp/releases) directly. When upgrading from 0.0.5-beta, the previous settings and history remain in the old data folder.
 
 ## Connect to MakerCalc on the web
 
@@ -165,7 +165,7 @@ No. The app works on its own with the printers on your network. The website is o
 No. It lets you know about new versions, and you choose when to install them.
 
 **My printer isn't on the list.**
-For Klipper and FlashForge, try **Search by IP** or add the printer manually. For Bambu Lab, use **Add printer** in a build from the current source.
+For Klipper and FlashForge, try **Search by IP** or add the printer manually. For Bambu Lab, use **Add printer** and enter the printer details manually.
 
 **Something isn't working.**
 [Open an issue](https://github.com/kkkohdeh/MakerCalcApp/issues) with your Windows version, your printer model and what happened. You can find the logs in **Settings → Diagnostics and logs → Open logs folder**.
