@@ -233,6 +233,7 @@ impl Report {
                         merge(&mut self.value["print"], incoming);
                     }
                     prune_disconnected_ams(&mut self.value["print"]);
+                    clear_absent_spool_data(&mut self.value["print"]);
                     status = true;
                 }
                 "info" if incoming["command"] == "get_version" => {
@@ -322,12 +323,51 @@ fn prune_disconnected_ams(print: &mut Value) {
     }
 }
 
+const SPOOL_FIELDS: [&str; 3] = ["remain", "nozzle_temp_min", "nozzle_temp_max"];
+
+fn clear_absent_spool_data(print: &mut Value) {
+    let Some(bits) = super::hex(&print["ams"]["tray_exist_bits"]) else {
+        return;
+    };
+    let Some(units) = print["ams"]["ams"].as_array_mut() else {
+        return;
+    };
+    for unit in units {
+        let Some(id) = super::integer(&unit["id"]) else {
+            continue;
+        };
+        let Some(trays) = unit["tray"].as_array_mut() else {
+            continue;
+        };
+        for tray in trays {
+            if let Some((_, bit)) =
+                super::integer(&tray["id"]).and_then(|slot| super::station_slot(id, slot))
+                && bits & (1 << bit) == 0
+                && let Some(fields) = tray.as_object_mut()
+            {
+                for key in SPOOL_FIELDS {
+                    fields.remove(key);
+                }
+            }
+        }
+    }
+}
+
 /// Objects merge field by field. Lists of objects that carry an `id` (or a light
 /// `node`) merge item by item, because deltas may carry only the items that changed;
 /// any other list replaces the previous one.
 fn merge(target: &mut Value, incoming: Value) {
     match (target, incoming) {
         (Value::Object(target), Value::Object(incoming)) => {
+            if ["tag_uid", "tray_uuid"].into_iter().any(|key| {
+                incoming
+                    .get(key)
+                    .is_some_and(|value| target.get(key) != Some(value))
+            }) {
+                for key in SPOOL_FIELDS {
+                    target.remove(key);
+                }
+            }
             for (key, value) in incoming {
                 merge(target.entry(key).or_insert(Value::Null), value);
             }
