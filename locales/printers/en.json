@@ -616,6 +616,13 @@
     },
     "controls": {
       "speed": "Print speed (%)",
+      "speed_profile": "%{profile} (%{percent}%)",
+      "speed_profile_current": "Print speed · %{profile}",
+      "speed_profile_running": "Available while printing.",
+      "speed_silent": "Silent",
+      "speed_standard": "Standard",
+      "speed_sport": "Sport",
+      "speed_ludicrous": "Ludicrous",
       "adjustment_active_job": "Available during printing or pause.",
       "speed_observed": "Reported %{value}%",
       "speed_unreported": "Speed not reported",

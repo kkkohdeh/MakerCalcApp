@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::Value;
 
+use crate::shared::control::MachineActionKind;
 use crate::shared::machine::{
     DeviceMetadata, EnvironmentalReadings, FanRole, MachineActivity, SoftwareRole, SoftwareVersion,
     SupplyKind, SupplyResource,
@@ -122,6 +123,11 @@ impl Projection {
         state.devices.extend(station_sensors);
         state.machine.device = metadata(report, print, model);
         state.machine.activity = activity(print);
+        state.machine.print_speed_profiles = super::control::speed_profiles(print);
+        state.machine.actions = state
+            .machine
+            .print_speed_profiles
+            .map_or_else(Vec::new, |_| vec![MachineActionKind::SetPrintSpeedOverride]);
         state.machine.supplies = self.supplies(print, observation);
         state.machine.current_supply = super::material_head(print).and_then(|head| {
             let active = head.loaded?;

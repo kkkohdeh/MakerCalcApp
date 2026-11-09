@@ -76,7 +76,7 @@ fn choices(printer: &PrinterEntry) -> Vec<Choice> {
             });
         }
     };
-    if speed_range(printer).is_some() {
+    if speed_range(printer).is_some() || machine.print_speed_profiles.is_some() {
         add("speed", K::SetPrintSpeedOverride, Control::Speed, None);
     }
     if z_offset_range(machine).is_some() {
@@ -253,6 +253,15 @@ fn availability(
     }
     if pending || printer.operation_state.is_pending() {
         return Err(ControlError::Busy);
+    }
+    if control == Control::Speed
+        && printer
+            .detail_state
+            .machine
+            .print_speed_profiles
+            .is_some_and(|profiles| !profiles.can_change)
+    {
+        return Err(ControlError::InvalidState);
     }
     if control == Control::ClearPlate
         && !printer

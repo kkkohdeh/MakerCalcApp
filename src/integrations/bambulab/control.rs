@@ -6,13 +6,16 @@ use tokio::sync::oneshot;
 use crate::shared::control::{
     ControlError, ControlResult, MachineAction, MachineActionKind, MachineCommand,
 };
-use crate::shared::machine::{SupplyBlock, SupplyControl, SupplyOperation, SupplyOperationPhase};
+use crate::shared::machine::{
+    PrintSpeedProfile, PrintSpeedProfiles, SupplyBlock, SupplyControl, SupplyOperation,
+    SupplyOperationPhase,
+};
 use crate::shared::telemetry::ElementId;
 use crate::shared::workspace::{
     DetailState, HeaterKind, LightRole, PrintControlContext, PrinterAction,
     PrinterActionKind as Kind, PrinterControls, ResourceId,
 };
-use crate::state::{LanConnection, PrinterState};
+use crate::state::{LanConnection, MachineJobTarget, PrinterState};
 
 use super::{MaterialHead, material_head};
 
@@ -20,6 +23,21 @@ fn unsigned_controls(print: &Value) -> bool {
     print
         .get("fun")
         .is_none_or(|value| super::hex(value).is_some_and(|bits| bits & 0x2000_0000 == 0))
+}
+
+pub(super) fn speed_profile(print: &Value) -> Option<PrintSpeedProfile> {
+    let level = usize::try_from(super::integer(&print["spd_lvl"])?).ok()?;
+    PrintSpeedProfile::ALL.get(level.checked_sub(1)?).copied()
+}
+
+pub(super) fn speed_profiles(print: &Value) -> Option<PrintSpeedProfiles> {
+    if !unsigned_controls(print) {
+        return None;
+    }
+    Some(PrintSpeedProfiles {
+        current: speed_profile(print)?,
+        can_change: print["gcode_state"] == "RUNNING",
+    })
 }
 
 pub(super) fn availability(report: &Value) -> PrinterControls {
@@ -171,11 +189,22 @@ pub(super) fn supply_controls(
     .collect()
 }
 
+#[derive(Clone, Copy)]
+enum Setting {
+    Speed(PrintSpeedProfile),
+}
+
 enum Target {
     Job(PrintControlContext),
     Light {
         node: &'static str,
         on: bool,
+    },
+    Setting {
+        expected: Setting,
+        revision: u64,
+        job: u64,
+        reply: Option<oneshot::Sender<ControlResult>>,
     },
     Filament {
         head: MaterialHead,
@@ -250,7 +279,7 @@ impl Pending {
                 "led_mode": if on { "on" } else { "off" },
                 "led_on_time": 500, "led_off_time": 500, "loop_times": 1, "interval_time": 1000
             }}),
-            Target::Filament { .. } => return None,
+            Target::Filament { .. } | Target::Setting { .. } => return None,
         };
         Some((
             Self {
@@ -264,6 +293,89 @@ impl Pending {
             },
             payload,
         ))
+    }
+
+    fn setting(
+        id: u16,
+        kind: Kind,
+        state: &PrinterState,
+        expected: Setting,
+        reply: Option<oneshot::Sender<ControlResult>>,
+        command: &'static str,
+        mut print: Value,
+    ) -> (Self, Value) {
+        print["sequence_id"] = json!(id.to_string());
+        print["command"] = json!(command);
+        (
+            Self {
+                kind,
+                deadline: tokio::time::Instant::now() + Duration::from_secs(10),
+                id,
+                group: "print",
+                command,
+                target: Target::Setting {
+                    expected,
+                    revision: state.revision,
+                    job: state.job_generation,
+                    reply,
+                },
+                acknowledged: false,
+            },
+            json!({"print": print}),
+        )
+    }
+
+    pub(super) fn prepare_machine(
+        command: MachineCommand,
+        state: &PrinterState,
+        report: &Value,
+        detail: &DetailState,
+        id: u16,
+    ) -> Option<(Self, Value)> {
+        let MachineAction::SetPrintSpeedOverride { percent } = command.action else {
+            return Self::prepare_filament(command, state, report, detail, id);
+        };
+        let prepare = || {
+            command.action.validate()?;
+            if state.connection != LanConnection::Connected {
+                return Err(ControlError::Disconnected);
+            }
+            if !detail.live
+                || !fresh_request(state, command.connection_epoch, command.submitted_at)
+                || command.job_target != Some(MachineJobTarget::Active(state.job_generation))
+                || state.machine_job_target() != MachineJobTarget::Active(state.job_generation)
+            {
+                return Err(ControlError::StaleResource);
+            }
+            let profiles = speed_profiles(&report["print"]).ok_or(ControlError::Unsupported)?;
+            if !profiles.can_change {
+                return Err(ControlError::InvalidState);
+            }
+            let profile = PrintSpeedProfile::selectable()
+                .find(|profile| profile.percent() == percent)
+                .ok_or(ControlError::InvalidData)?;
+            let level = PrintSpeedProfile::ALL
+                .iter()
+                .position(|candidate| *candidate == profile)
+                .ok_or(ControlError::Unsupported)?
+                + 1;
+            Ok((profile, level))
+        };
+        match prepare() {
+            Ok((profile, level)) => Some(Self::setting(
+                id,
+                Kind::MachineControl,
+                state,
+                Setting::Speed(profile),
+                Some(command.reply),
+                "print_speed",
+                json!({"param": level.to_string()}),
+            )),
+            Err(error) => {
+                let _ = command.reply.send(ControlResult::Rejected(error));
+                None
+            }
+        }
     }
 
     pub(super) fn prepare_filament(
@@ -406,6 +518,18 @@ impl Pending {
                         .any(|light| light["node"] == node && light["mode"] == expected)
                 })
             }
+            Target::Setting {
+                expected,
+                revision,
+                job,
+                ..
+            } => {
+                state.revision > revision
+                    && state.job_generation == job
+                    && match expected {
+                        Setting::Speed(profile) => speed_profile(print) == Some(profile),
+                    }
+            }
             Target::Filament {
                 head,
                 tray,
@@ -462,7 +586,11 @@ impl Pending {
 
     pub(super) fn finish(self, result: ControlResult) -> crate::shared::workspace::OperationState {
         use crate::shared::workspace::OperationState;
-        if let Target::Filament { reply, .. } = self.target {
+        if let Target::Filament { reply, .. }
+        | Target::Setting {
+            reply: Some(reply), ..
+        } = self.target
+        {
             let _ = reply.send(result);
             return OperationState::Idle;
         }
@@ -475,4 +603,14 @@ impl Pending {
             },
         }
     }
+}
+
+fn fresh_request(state: &PrinterState, epoch: u64, submitted_at: Instant) -> bool {
+    state.connection == LanConnection::Connected
+        && state.telemetry_ready
+        && state.connection_epoch == epoch
+        && state
+            .age_ms(Instant::now())
+            .is_some_and(|age| age <= 15_000)
+        && submitted_at.elapsed() <= Duration::from_secs(5)
 }

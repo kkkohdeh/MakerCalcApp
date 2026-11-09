@@ -232,7 +232,7 @@ impl Session<'_> {
                         let _ = command.reply.send(ControlResult::Rejected(ControlError::SendFailed));
                         return (mqtt::Error::Protocol("packet identifiers exhausted"), delivered);
                     };
-                    let prepared = control::Pending::prepare_filament(
+                    let prepared = control::Pending::prepare_machine(
                         command, &self.state_sender.borrow(), report.value(), self.detail, id,
                     );
                     if let Some((prepared, payload)) = prepared {
@@ -441,13 +441,7 @@ fn speed_override(print: &Value) -> Option<f64> {
     if let Some(magnitude) = integer(&print["spd_mag"]).filter(|magnitude| *magnitude > 0) {
         return Some(magnitude as f64);
     }
-    match integer(&print["spd_lvl"])? {
-        1 => Some(50.0),
-        2 => Some(100.0),
-        3 => Some(124.0),
-        4 => Some(166.0),
-        _ => None,
-    }
+    control::speed_profile(print).map(|profile| f64::from(profile.percent()))
 }
 
 /// Codes only, never the vendor text: `print_error` as `XXXX_XXXX` and each HMS entry

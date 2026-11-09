@@ -2,10 +2,45 @@
 //! None means absent, invalid or not reported, never a fabricated zero.
 use serde::Serialize;
 
-use super::control::{CalibrationKind, ControlError, MachineActionKind};
+use super::control::{
+    CalibrationKind, ControlError, MAX_PRINT_SPEED_OVERRIDE_PCT, MachineActionKind,
+};
 use super::printer::PrintStatus;
 use super::telemetry::FilamentSupplyTelemetry;
 use super::workspace::ResourceId;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PrintSpeedProfile {
+    Silent,
+    Standard,
+    Sport,
+    Ludicrous,
+}
+
+impl PrintSpeedProfile {
+    pub(crate) const ALL: [Self; 4] = [Self::Silent, Self::Standard, Self::Sport, Self::Ludicrous];
+
+    pub(crate) const fn percent(self) -> u16 {
+        match self {
+            Self::Silent => 50,
+            Self::Standard => 100,
+            Self::Sport => 124,
+            Self::Ludicrous => 166,
+        }
+    }
+
+    pub(crate) fn selectable() -> impl Iterator<Item = Self> {
+        Self::ALL
+            .into_iter()
+            .filter(|profile| profile.percent() <= MAX_PRINT_SPEED_OVERRIDE_PCT)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PrintSpeedProfiles {
+    pub(crate) current: PrintSpeedProfile,
+    pub(crate) can_change: bool,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum MotionSource {
@@ -205,6 +240,8 @@ pub(crate) struct MachineInfo {
     pub(crate) enclosure_closed: Option<bool>,
     pub(crate) issues: Vec<PrinterIssue>,
     pub(crate) speed_override_range_pct: Option<[u16; 2]>,
+    #[serde(skip)]
+    pub(crate) print_speed_profiles: Option<PrintSpeedProfiles>,
     #[serde(skip)]
     pub(crate) print_adjustments_require_active_job: bool,
     /// Optional manual-move speed capability: maximum X/Y/Z speeds in mm/s.

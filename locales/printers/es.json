@@ -616,6 +616,13 @@
     },
     "controls": {
       "speed": "Velocidad de impresión (%)",
+      "speed_profile": "%{profile} (%{percent} %)",
+      "speed_profile_current": "Velocidad de impresión · %{profile}",
+      "speed_profile_running": "Disponible durante la impresión.",
+      "speed_silent": "Silencioso",
+      "speed_standard": "Estándar",
+      "speed_sport": "Deportivo",
+      "speed_ludicrous": "Extremo",
       "adjustment_active_job": "Disponible durante la impresión o la pausa.",
       "speed_observed": "Lectura %{value}%",
       "speed_unreported": "Velocidad sin lectura",

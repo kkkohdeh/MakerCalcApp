@@ -3,8 +3,8 @@ use crate::gpui_app::{
     MakerCalcGpuiApp, PrinterEntry, bay, components::button::Button, icons, materials,
 };
 use crate::i18n::t;
-use crate::shared::control::{CalibrationKind, ControlError};
-use crate::shared::machine::CalibrationReadiness;
+use crate::shared::control::{CalibrationKind, ControlError, MachineAction};
+use crate::shared::machine::{CalibrationReadiness, PrintSpeedProfile};
 use crate::state::LocalPrinterId;
 use gpui_kit::component::menu::PopupMenuItem;
 use gpui_kit::component::{Icon, Sizable as _};
@@ -143,7 +143,13 @@ impl MakerCalcGpuiApp {
                 let header = choice.control.header()?;
                 let (_, focus) = focus_handles.iter().find(|(name, _)| *name == header.id)?;
                 let blocked = availability(printer, choice.control, pending).err();
+                let profiles = machine
+                    .print_speed_profiles
+                    .filter(|_| choice.control == Control::Speed);
                 let hint = match blocked {
+                    Some(ControlError::InvalidState) if profiles.is_some_and(|p| !p.can_change) => {
+                        t!("printers.controls.speed_profile_running").into_owned()
+                    }
                     Some(error)
                         if matches!(
                             choice.control,
@@ -191,30 +197,49 @@ impl MakerCalcGpuiApp {
                         t!("printers.controls.clear_plate_material_unknown").into_owned()
                     }
                     Some(error) => materials::result_message(error),
-                    None => choice.label.clone(),
-                };
-                Some(
-                    Button::new(header.id)
-                        .focus_handle(focus)
-                        .ghost()
-                        .small()
-                        .w(px(30.))
-                        .px_0()
-                        .icon(Icon::default().data(header.svg))
-                        .when_some(header.badge, |button, badge| {
-                            button.child(
-                                div()
-                                    .absolute()
-                                    .right(px(3.))
-                                    .top(px(1.))
-                                    .text_size(px(9.))
-                                    .child(badge),
+                    None => profiles.map_or_else(
+                        || choice.label.clone(),
+                        |p| {
+                            t!(
+                                "printers.controls.speed_profile_current",
+                                profile = profile_label(p.current)
                             )
-                        })
-                        .accessibility_label(choice.label.clone())
-                        .tooltip(hint)
+                            .into_owned()
+                        },
+                    ),
+                };
+                let button = Button::new(header.id)
+                    .focus_handle(focus)
+                    .ghost()
+                    .small()
+                    .w(px(30.))
+                    .px_0()
+                    .icon(Icon::default().data(header.svg))
+                    .when_some(header.badge, |button, badge| {
+                        button.child(
+                            div()
+                                .absolute()
+                                .right(px(3.))
+                                .top(px(1.))
+                                .text_size(px(9.))
+                                .child(badge),
+                        )
+                    })
+                    .accessibility_label(choice.label.clone())
+                    .tooltip(hint)
+                    .disabled(blocked.is_some());
+                if let Some(profiles) = profiles {
+                    return Some(speed_profile_menu(
+                        button,
+                        id,
+                        printer,
+                        profiles.current,
+                        cx,
+                    ));
+                }
+                Some(
+                    button
                         .popup_trigger()
-                        .disabled(blocked.is_some())
                         .on_click(cx.listener(move |app, _, window, cx| {
                             app.open_machine_editor(id, choice.clone(), window, cx);
                         }))
@@ -224,6 +249,89 @@ impl MakerCalcGpuiApp {
             .chain(fan_control)
             .collect()
     }
+}
+
+fn profile_label(profile: PrintSpeedProfile) -> String {
+    let key = match profile {
+        PrintSpeedProfile::Silent => "printers.controls.speed_silent",
+        PrintSpeedProfile::Standard => "printers.controls.speed_standard",
+        PrintSpeedProfile::Sport => "printers.controls.speed_sport",
+        PrintSpeedProfile::Ludicrous => "printers.controls.speed_ludicrous",
+    };
+    t!(key).into_owned()
+}
+
+fn speed_profile_menu(
+    button: Button,
+    id: LocalPrinterId,
+    printer: &PrinterEntry,
+    current: PrintSpeedProfile,
+    cx: &mut Context<MakerCalcGpuiApp>,
+) -> AnyElement {
+    let app = cx.entity().downgrade();
+    let session = printer.session_generation;
+    let epoch = printer.state.connection_epoch;
+    let job = printer.state.machine_job_target();
+    button
+        .dropdown_menu(move |mut menu, _, _| {
+            for profile in PrintSpeedProfile::selectable() {
+                let name = t!(
+                    "printers.controls.speed_profile",
+                    profile = profile_label(profile),
+                    percent = profile.percent()
+                );
+                let (app, job) = (app.clone(), job.clone());
+                menu = menu.item(
+                    PopupMenuItem::new(name.into_owned())
+                        .checked(profile == current)
+                        .on_click(move |_, _, cx| {
+                            let _ = app.update(cx, |app, cx| {
+                                let Some(printer) = app.printers.get(&id).filter(|printer| {
+                                    app.selected == Some(id)
+                                        && app.detail_tab
+                                            == crate::gpui_app::detail::DetailTab::Overview
+                                        && printer.session_generation == session
+                                        && printer.state.connection_epoch == epoch
+                                        && printer.state.matches_machine_job_target(&job)
+                                        && printer
+                                            .detail_state
+                                            .machine
+                                            .print_speed_profiles
+                                            .is_some_and(|p| p.current != profile)
+                                        && availability(
+                                            printer,
+                                            Control::Speed,
+                                            app.machine_controls.is_pending(id),
+                                        )
+                                        .is_ok()
+                                }) else {
+                                    return;
+                                };
+                                let action = MachineAction::SetPrintSpeedOverride {
+                                    percent: profile.percent(),
+                                };
+                                match printer.operation.machine_action_for_job(
+                                    epoch,
+                                    Some(job.clone()),
+                                    action.clone(),
+                                ) {
+                                    Ok(reply) => app.track_machine_request(
+                                        id, session, epoch, action, reply, cx,
+                                    ),
+                                    Err(error) => app.push_toast(
+                                        super::ToastKind::Error,
+                                        materials::result_message(error),
+                                        None,
+                                        cx,
+                                    ),
+                                }
+                            });
+                        }),
+                );
+            }
+            menu
+        })
+        .into_any_element()
 }
 
 fn fan_control(
