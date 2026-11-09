@@ -40,8 +40,8 @@
       "open_github_repository": "Abrir el repositorio en GitHub",
       "dismiss": "Descartar",
       "saving": "Guardando…",
-      "bay_short": "← Bahía",
-      "bay": "← Bahía de impresoras"
+      "bay_short": "Bahía",
+      "bay": "Bahía de impresoras"
     },
     "status": {
       "idle": "En espera",

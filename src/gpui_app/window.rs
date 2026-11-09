@@ -1,6 +1,6 @@
 use super::components::button::Button;
 use crate::i18n::t;
-use gpui_kit::base::{StyledExt as _, TestSupportExt as _};
+use gpui_kit::base::{Link, StyledExt as _, TestSupportExt as _};
 use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, TitleBar, h_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -281,15 +281,28 @@ impl MakerCalcGpuiApp {
                     )
                     .child(div().h(px(16.)).w(px(1.)).bg(cx.theme().border))
                     .child(
-                        Button::new("back-to-bay")
-                            .outline()
-                            .small()
-                            .label(if compact {
+                        Link::new("back-to-bay")
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .h(px(28.))
+                            .text_xs()
+                            .font_medium()
+                            .cursor_pointer()
+                            .hover(|style| style.underline())
+                            .focus_visible(|style| style.underline())
+                            .accessibility_label(t!("common.actions.bay").into_owned())
+                            .child(
+                                Icon::default()
+                                    .data(super::icons::SVG_MOVE_LEFT)
+                                    .size(px(16.)),
+                            )
+                            .child(if compact {
                                 t!("common.actions.bay_short").into_owned()
                             } else {
                                 t!("common.actions.bay").into_owned()
                             })
-                            .on_click(cx.listener(|app, _, _, cx| app.close_detail(cx))),
+                            .on_activate(cx.listener(|app, _, _, cx| app.close_detail(cx))),
                     ),
             )
             .child(
