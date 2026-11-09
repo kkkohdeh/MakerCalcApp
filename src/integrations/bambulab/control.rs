@@ -40,6 +40,58 @@ pub(super) fn speed_profiles(print: &Value) -> Option<PrintSpeedProfiles> {
     })
 }
 
+pub(super) fn temperature_targets(print: &Value) -> Vec<HeaterKind> {
+    if !can_heat(print) {
+        return Vec::new();
+    }
+    [HeaterKind::Nozzle, HeaterKind::Bed]
+        .into_iter()
+        .filter(|heater| heater_target(print, *heater).is_some())
+        .collect()
+}
+
+fn can_heat(print: &Value) -> bool {
+    unsigned_controls(print)
+        && matches!(print["gcode_state"].as_str(), Some("IDLE" | "FINISH"))
+        && print
+            .get("ams_status")
+            .is_none_or(|_| ams_phase(print) == Some(0))
+        && !material_activity(print)
+}
+
+fn heater_target(print: &Value, heater: HeaterKind) -> Option<f64> {
+    match heater {
+        HeaterKind::Nozzle => {
+            let extruder = &print["device"]["extruder"];
+            if extruder["info"].is_array()
+                && !super::integer(&extruder["state"])
+                    .is_some_and(|state| state > 0 && (state >> 4) & 0xf == 0)
+            {
+                return None;
+            }
+            let mut nozzles = super::nozzles(print)
+                .into_iter()
+                .filter(|n| n.id == ElementId(1) && n.is_active);
+            let nozzle = nozzles.next()?;
+            if nozzles.next().is_some()
+                || nozzle
+                    .nozzle_temp_c
+                    .is_none_or(|temp| temp <= 0.0 || temp > 500.0)
+            {
+                return None;
+            }
+            nozzle.nozzle_target_temp_c
+        }
+        HeaterKind::Bed => {
+            let bed = super::beds(print).into_iter().next()?;
+            bed.bed_temp_c
+                .filter(|temp| *temp > 0.0 && *temp <= 200.0)?;
+            bed.bed_target_temp_c
+        }
+    }
+    .filter(|target| (0.0..=500.0).contains(target))
+}
+
 pub(super) fn availability(report: &Value) -> PrinterControls {
     let print = &report["print"];
     let unsigned = unsigned_controls(print);
@@ -85,14 +137,16 @@ fn material_block(print: &Value) -> Result<(), SupplyBlock> {
         return Err(SupplyBlock::NotIdle);
     }
     let phase = ams_phase(print).ok_or(SupplyBlock::Unknown)?;
-    if phase != 0
-        || super::hex(&print["ams"]["tray_reading_bits"]).is_some_and(|bits| bits != 0)
-        || super::integer(&print["stg_cur"]).is_some_and(|stage| !matches!(stage, -1 | 0 | 255))
-        || super::integer(&print["print_error"]).is_some_and(|error| error != 0)
-    {
+    if phase != 0 || material_activity(print) {
         return Err(SupplyBlock::Busy);
     }
     Ok(())
+}
+
+fn material_activity(print: &Value) -> bool {
+    super::hex(&print["ams"]["tray_reading_bits"]).is_some_and(|bits| bits != 0)
+        || super::integer(&print["stg_cur"]).is_some_and(|stage| !matches!(stage, -1 | 0 | 255))
+        || super::integer(&print["print_error"]).is_some_and(|error| error != 0)
 }
 
 fn routed_to_head(print: &Value, tray: &super::StationTray<'_>, head: MaterialHead) -> bool {
@@ -192,6 +246,7 @@ pub(super) fn supply_controls(
 #[derive(Clone, Copy)]
 enum Setting {
     Speed(PrintSpeedProfile),
+    Temperature(HeaterKind, u16),
 }
 
 enum Target {
@@ -236,6 +291,53 @@ impl Pending {
     ) -> Option<(Self, Value)> {
         let kind = action.kind();
         let sequence = id.to_string();
+        let print = &report["print"];
+        if let PrinterAction::SetTemperatureTarget {
+            heater,
+            target_c,
+            connection_epoch,
+            submitted_at,
+        } = *action
+        {
+            if !fresh_request(state, connection_epoch, submitted_at)
+                || target_c > heater.max_target_c()
+                || !can_heat(print)
+                || heater_target(print, heater).is_none()
+            {
+                return None;
+            }
+            let (command, payload) = match heater {
+                HeaterKind::Nozzle if print["device"]["extruder"]["info"].is_array() => (
+                    "set_nozzle_temp",
+                    json!({"extruder_index": 0, "target_temp": target_c}),
+                ),
+                HeaterKind::Bed
+                    if super::hex(&print["fun"]).is_some_and(|bits| bits & (1 << 39) != 0) =>
+                {
+                    ("set_bed_temp", json!({"temp": target_c}))
+                }
+                _ => {
+                    let code = if heater == HeaterKind::Nozzle {
+                        "M104"
+                    } else {
+                        "M140"
+                    };
+                    (
+                        "gcode_line",
+                        json!({"param": format!("{code} S{target_c}\n")}),
+                    )
+                }
+            };
+            return Some(Self::setting(
+                id,
+                kind,
+                state,
+                Setting::Temperature(heater, target_c),
+                None,
+                command,
+                payload,
+            ));
+        }
         let (target, group, command) = match action {
             PrinterAction::PausePrint(context)
             | PrinterAction::ResumePrint(context)
@@ -528,6 +630,9 @@ impl Pending {
                     && state.job_generation == job
                     && match expected {
                         Setting::Speed(profile) => speed_profile(print) == Some(profile),
+                        Setting::Temperature(heater, target) => {
+                            heater_target(print, heater) == Some(f64::from(target))
+                        }
                     }
             }
             Target::Filament {

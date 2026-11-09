@@ -123,6 +123,7 @@ impl Projection {
         state.devices.extend(station_sensors);
         state.machine.device = metadata(report, print, model);
         state.machine.activity = activity(print);
+        state.temperature_targets = super::control::temperature_targets(print);
         state.machine.print_speed_profiles = super::control::speed_profiles(print);
         state.machine.actions = state
             .machine

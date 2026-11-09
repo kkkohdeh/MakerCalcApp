@@ -204,9 +204,13 @@ impl Session<'_> {
                             });
                             return (mqtt::Error::Protocol("packet identifiers exhausted"), delivered);
                         };
-                        let command = control::Pending::prepare(
-                            &action, &self.state_sender.borrow(), report.value(), id,
-                        );
+                        let command = if !matches!(action, PrinterAction::SetTemperatureTarget { .. }) || self.detail.live {
+                            control::Pending::prepare(
+                                &action, &self.state_sender.borrow(), report.value(), id,
+                            )
+                        } else {
+                            None
+                        };
                         if let Some((prepared, payload)) = command {
                             self.operations.send_replace(OperationState::Sending(prepared.kind));
                             packet_id = id;
