@@ -1,17 +1,30 @@
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
+use tokio::sync::oneshot;
 
+use crate::shared::control::{
+    ControlError, ControlResult, MachineAction, MachineActionKind, MachineCommand,
+};
+use crate::shared::machine::{SupplyBlock, SupplyControl, SupplyOperation, SupplyOperationPhase};
+use crate::shared::telemetry::ElementId;
 use crate::shared::workspace::{
-    LightRole, PrintControlContext, PrinterAction, PrinterActionKind as Kind, PrinterControls,
+    DetailState, HeaterKind, LightRole, PrintControlContext, PrinterAction,
+    PrinterActionKind as Kind, PrinterControls, ResourceId,
 };
 use crate::state::{LanConnection, PrinterState};
 
+use super::{MaterialHead, material_head};
+
+fn unsigned_controls(print: &Value) -> bool {
+    print
+        .get("fun")
+        .is_none_or(|value| super::hex(value).is_some_and(|bits| bits & 0x2000_0000 == 0))
+}
+
 pub(super) fn availability(report: &Value) -> PrinterControls {
     let print = &report["print"];
-    let unsigned = print
-        .get("fun")
-        .is_none_or(|value| super::hex(value).is_some_and(|bits| bits & 0x2000_0000 == 0));
+    let unsigned = unsigned_controls(print);
     let running = print["gcode_state"].as_str() == Some("RUNNING");
     let paused = print["gcode_state"].as_str() == Some("PAUSE");
     PrinterControls {
@@ -43,9 +56,136 @@ fn light_target(print: &Value, role: LightRole) -> Option<(&'static str, bool)> 
     }
 }
 
+fn ams_phase(print: &Value) -> Option<i64> {
+    super::integer(&print["ams_status"])
+        .filter(|status| (0..=65535).contains(status))
+        .map(|status| status >> 8)
+}
+
+fn material_block(print: &Value) -> Result<(), SupplyBlock> {
+    if print["gcode_state"] != "IDLE" {
+        return Err(SupplyBlock::NotIdle);
+    }
+    let phase = ams_phase(print).ok_or(SupplyBlock::Unknown)?;
+    if phase != 0
+        || super::hex(&print["ams"]["tray_reading_bits"]).is_some_and(|bits| bits != 0)
+        || super::integer(&print["stg_cur"]).is_some_and(|stage| !matches!(stage, -1 | 0 | 255))
+        || super::integer(&print["print_error"]).is_some_and(|error| error != 0)
+    {
+        return Err(SupplyBlock::Busy);
+    }
+    Ok(())
+}
+
+fn routed_to_head(print: &Value, tray: &super::StationTray<'_>, head: MaterialHead) -> bool {
+    if !matches!(tray.ams_id, 0..=3 | 128..=135) || (tray.ams_id >= 128 && tray.slot != 0) {
+        return false;
+    }
+    let Some(extruder) = head.extruder else {
+        return true;
+    };
+    match super::integer(&print["device"]["extruder"]["state"]).map(|state| state & 0xf) {
+        Some(1) => true,
+        Some(2..=15) if extruder < 14 => super::hex(&tray.unit["info"])
+            .is_some_and(|info| (info >> 8) & 0xf == u64::from(extruder)),
+        _ => false,
+    }
+}
+
+fn temperature(tray: &Value) -> Option<i64> {
+    let min = super::integer(&tray["nozzle_temp_min"])?;
+    let max = super::integer(&tray["nozzle_temp_max"])?;
+    let limit = i64::from(HeaterKind::Nozzle.max_target_c());
+    if !(150..=limit).contains(&min) || !(min..=350).contains(&max) {
+        return None;
+    }
+    Some((min + max.min(limit)) / 2)
+}
+
+fn drying(unit: &Value) -> bool {
+    super::integer(&unit["dry_time"]).is_some_and(|minutes| minutes > 0)
+        || super::hex(&unit["info"]).is_some_and(|info| (info >> 4) & 0xf != 0)
+}
+
+fn filament_target(
+    print: &Value,
+    tray: &super::StationTray<'_>,
+    action: MachineActionKind,
+    present: Option<bool>,
+) -> Result<(MaterialHead, i64, i64), SupplyBlock> {
+    material_block(print)?;
+    let head = material_head(print).ok_or(SupplyBlock::Unknown)?;
+    if !routed_to_head(print, tray, head) {
+        return Err(SupplyBlock::Unsupported);
+    }
+    let unloading = action == MachineActionKind::UnloadFilament;
+    if unloading != (head.loaded == Some(tray.id)) {
+        return Err(SupplyBlock::NotCurrent);
+    }
+    if !unloading && present != Some(true) {
+        return Err(if present.is_some() {
+            SupplyBlock::NoFilament
+        } else {
+            SupplyBlock::Unknown
+        });
+    }
+    let target = temperature(tray.data).ok_or(SupplyBlock::Unknown)?;
+    let old = if let Some(id) = head.loaded {
+        let loaded = super::station_trays(print)
+            .find(|source| source.id == id)
+            .ok_or(SupplyBlock::Unknown)?;
+        if !routed_to_head(print, &loaded, head) || drying(loaded.unit) {
+            return Err(SupplyBlock::Busy);
+        }
+        temperature(loaded.data).ok_or(SupplyBlock::Unknown)?
+    } else {
+        -1
+    };
+    if drying(tray.unit) {
+        return Err(SupplyBlock::Busy);
+    }
+    Ok((head, old, target))
+}
+
+pub(super) fn supply_controls(
+    print: &Value,
+    tray: &super::StationTray<'_>,
+    present: Option<bool>,
+) -> Vec<SupplyControl> {
+    let Some(head) = material_head(print) else {
+        return Vec::new();
+    };
+    if !unsigned_controls(print) || !routed_to_head(print, tray, head) {
+        return Vec::new();
+    }
+    [
+        MachineActionKind::LoadFilament,
+        MachineActionKind::UnloadFilament,
+    ]
+    .into_iter()
+    .filter(|action| *action != MachineActionKind::LoadFilament || head.loaded != Some(tray.id))
+    .map(|action| SupplyControl {
+        action,
+        blocked: filament_target(print, tray, action, present).err(),
+    })
+    .collect()
+}
+
 enum Target {
     Job(PrintControlContext),
-    Light { node: &'static str, on: bool },
+    Light {
+        node: &'static str,
+        on: bool,
+    },
+    Filament {
+        head: MaterialHead,
+        supply: ResourceId,
+        tray: ElementId,
+        action: MachineActionKind,
+        job: u64,
+        ams_idle_reported: bool,
+        reply: oneshot::Sender<ControlResult>,
+    },
 }
 
 pub(super) struct Pending {
@@ -110,6 +250,7 @@ impl Pending {
                 "led_mode": if on { "on" } else { "off" },
                 "led_on_time": 500, "led_off_time": 500, "loop_times": 1, "interval_time": 1000
             }}),
+            Target::Filament { .. } => return None,
         };
         Some((
             Self {
@@ -125,6 +266,97 @@ impl Pending {
         ))
     }
 
+    pub(super) fn prepare_filament(
+        command: MachineCommand,
+        state: &PrinterState,
+        report: &Value,
+        detail: &DetailState,
+        id: u16,
+    ) -> Option<(Self, Value)> {
+        let prepare = || {
+            let kind = command.action.kind();
+            let supply_id = match command.action {
+                MachineAction::LoadFilament { supply_id }
+                | MachineAction::UnloadFilament { supply_id } => supply_id,
+                _ => return Err(ControlError::Unsupported),
+            };
+            if state.connection != LanConnection::Connected {
+                return Err(ControlError::Disconnected);
+            }
+            if state.connection_epoch != command.connection_epoch
+                || !state.telemetry_ready
+                || !detail.live
+                || state.age_ms(Instant::now()).is_none_or(|age| age > 15_000)
+                || command.submitted_at.elapsed() > Duration::from_secs(5)
+            {
+                return Err(ControlError::StaleResource);
+            }
+            let print = &report["print"];
+            if !unsigned_controls(print) {
+                return Err(ControlError::Unsupported);
+            }
+            let resource = detail
+                .machine
+                .supplies
+                .iter()
+                .find(|resource| resource.id == supply_id)
+                .ok_or(ControlError::StaleResource)?;
+            resource
+                .availability(kind, Instant::now())
+                .map_err(SupplyBlock::error)?;
+            let mut trays =
+                super::station_trays(print).filter(|tray| tray.id == resource.reading.id);
+            let tray = trays.next().ok_or(ControlError::StaleResource)?;
+            if trays.next().is_some() {
+                return Err(ControlError::InvalidState);
+            }
+            let (head, old, target) =
+                filament_target(print, &tray, kind, resource.reading.filament_present)
+                    .map_err(SupplyBlock::error)?;
+            let unloading = kind == MachineActionKind::UnloadFilament;
+            let mut payload = json!({"print": {
+                "sequence_id": id.to_string(), "command": "ams_change_filament",
+                "ams_id": tray.ams_id, "slot_id": if unloading { 255 } else { tray.slot },
+                "target": if unloading { 255 } else { tray.id.0 },
+                "curr_temp": old, "tar_temp": target
+            }});
+            if let Some(extruder) = head.extruder {
+                payload["print"]["extruder_id"] = json!(extruder);
+            }
+            let expected = MaterialHead {
+                loaded: (!unloading).then_some(tray.id),
+                ..head
+            };
+            Ok((expected, supply_id, tray.id, kind, payload))
+        };
+        match prepare() {
+            Ok((head, supply, tray, action, payload)) => Some((
+                Self {
+                    kind: Kind::MachineControl,
+                    deadline: tokio::time::Instant::now() + Duration::from_secs(180),
+                    id,
+                    group: "print",
+                    command: "ams_change_filament",
+                    target: Target::Filament {
+                        head,
+                        supply,
+                        tray,
+                        action,
+                        job: state.job_generation,
+                        ams_idle_reported: false,
+                        reply: command.reply,
+                    },
+                    acknowledged: false,
+                },
+                payload,
+            )),
+            Err(error) => {
+                let _ = command.reply.send(ControlResult::Rejected(error));
+                None
+            }
+        }
+    }
+
     pub(super) fn acknowledge(&mut self, message: &Value) -> bool {
         let reply = &message[self.group];
         if super::integer(&reply["sequence_id"]) != Some(i64::from(self.id))
@@ -135,8 +367,14 @@ impl Pending {
             return true;
         }
         match reply["result"].as_str() {
-            Some("success") => self.acknowledged = true,
-            Some("fail" | "failed" | "error") => return false,
+            Some(result) if result.eq_ignore_ascii_case("success") => self.acknowledged = true,
+            Some(result)
+                if ["fail", "failed", "error"]
+                    .iter()
+                    .any(|failure| result.eq_ignore_ascii_case(failure)) =>
+            {
+                return false;
+            }
             _ => {}
         }
         true
@@ -168,6 +406,73 @@ impl Pending {
                         .any(|light| light["node"] == node && light["mode"] == expected)
                 })
             }
+            Target::Filament {
+                head,
+                tray,
+                job,
+                ams_idle_reported,
+                ..
+            } => {
+                ams_idle_reported
+                    && state.job_generation == job
+                    && state
+                        .age_ms(Instant::now())
+                        .is_some_and(|age| age <= 15_000)
+                    && material_block(print).is_ok()
+                    && material_head(print) == Some(head)
+                    && super::station_trays(print).any(|source| source.id == tray)
+            }
+        }
+    }
+
+    pub(super) fn observe_ams_status(&mut self, report: &Value) {
+        if let Target::Filament {
+            ams_idle_reported, ..
+        } = &mut self.target
+        {
+            *ams_idle_reported = ams_phase(&report["print"]) == Some(0);
+        }
+    }
+
+    pub(super) fn operation(&self, report: &Value) -> Option<(ResourceId, SupplyOperation)> {
+        let Target::Filament {
+            head,
+            supply,
+            action,
+            ..
+        } = self.target
+        else {
+            return None;
+        };
+        let print = &report["print"];
+        let target = head.loaded.map_or(255, |id| i64::from(id.0));
+        (self.acknowledged
+            && ams_phase(print) == Some(1)
+            && material_head(print).is_some_and(|current| current.extruder == head.extruder)
+            && super::integer(&print["ams"]["tray_tar"]) == Some(target))
+        .then_some((
+            supply,
+            SupplyOperation {
+                action,
+                phase: SupplyOperationPhase::Running,
+                step: None,
+            },
+        ))
+    }
+
+    pub(super) fn finish(self, result: ControlResult) -> crate::shared::workspace::OperationState {
+        use crate::shared::workspace::OperationState;
+        if let Target::Filament { reply, .. } = self.target {
+            let _ = reply.send(result);
+            return OperationState::Idle;
+        }
+        match result {
+            ControlResult::Accepted => OperationState::Accepted(self.kind),
+            ControlResult::Unknown => OperationState::Unknown(self.kind),
+            ControlResult::Rejected(_) => OperationState::Rejected {
+                action: self.kind,
+                message: crate::i18n::t!("printers.bambulab.errors.control_rejected").into_owned(),
+            },
         }
     }
 }

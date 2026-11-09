@@ -15,6 +15,7 @@ use tokio::sync::{mpsc, watch};
 use tokio::time::{Instant as TokioInstant, sleep_until};
 
 use crate::i18n::t;
+use crate::shared::control::{ControlError, ControlResult, MachineCommand};
 use crate::shared::printer::{PrintStatus, PrinterObservation};
 use crate::shared::telemetry::{
     BedTelemetry, ElementId, FilamentSensorTelemetry, FilamentSupplyTelemetry, LightRole,
@@ -66,9 +67,8 @@ pub(crate) async fn run_driver(
     let OperationIo {
         mut actions,
         state: operations,
-        machine_actions,
+        mut machine_actions,
     } = operation_io;
-    drop(machine_actions);
     let model = machine::model_for_serial(serial);
     let mut generation = 0_u64;
     let mut retry = RETRY_MIN;
@@ -90,6 +90,7 @@ pub(crate) async fn run_driver(
             projection: &mut projection,
             detail: &mut detail,
             actions: &mut actions,
+            machine_actions: &mut machine_actions,
             operations: &operations,
         };
         let (error, delivered) = tokio::select! {
@@ -108,6 +109,11 @@ pub(crate) async fn run_driver(
             let _ = state.record_error(error_message(&error));
         });
         while actions.try_recv().is_ok() {}
+        while let Ok(command) = machine_actions.try_recv() {
+            let _ = command
+                .reply
+                .send(ControlResult::Rejected(ControlError::Disconnected));
+        }
         let interrupted = match *operations.borrow() {
             OperationState::Sending(kind) => Some(kind),
             _ => None,
@@ -144,6 +150,7 @@ struct Session<'a> {
     projection: &'a mut machine::Projection,
     detail: &'a mut DetailState,
     actions: &'a mut mpsc::Receiver<PrinterAction>,
+    machine_actions: &'a mut mpsc::Receiver<MachineCommand>,
     operations: &'a watch::Sender<OperationState>,
 }
 
@@ -178,7 +185,7 @@ impl Session<'_> {
                         return (mqtt::Error::Stale, delivered);
                     }
                     if let Some(action) = pending.take() {
-                        self.finish_action(OperationState::Unknown(action.kind));
+                        self.finish_action(action.finish(ControlResult::Unknown));
                     }
                     continue;
                 }
@@ -216,6 +223,28 @@ impl Session<'_> {
                     }
                     continue;
                 }
+                Some(command) = self.machine_actions.recv() => {
+                    if pending.is_some() {
+                        let _ = command.reply.send(ControlResult::Rejected(ControlError::Busy));
+                        continue;
+                    }
+                    let Some(id) = packet_id.checked_add(1) else {
+                        let _ = command.reply.send(ControlResult::Rejected(ControlError::SendFailed));
+                        return (mqtt::Error::Protocol("packet identifiers exhausted"), delivered);
+                    };
+                    let prepared = control::Pending::prepare_filament(
+                        command, &self.state_sender.borrow(), report.value(), self.detail, id,
+                    );
+                    if let Some((prepared, payload)) = prepared {
+                        self.operations.send_replace(OperationState::Sending(prepared.kind));
+                        packet_id = id;
+                        if let Err(error) = connection.send_control(id, &payload).await {
+                            return (error, delivered);
+                        }
+                        pending = Some(prepared);
+                    }
+                    continue;
+                }
             };
             let message = match packet {
                 Ok(packet) => match connection.message(packet).await {
@@ -230,12 +259,12 @@ impl Session<'_> {
                 .is_some_and(|action| !action.acknowledge(&message))
                 && let Some(action) = pending.take()
             {
-                self.finish_action(OperationState::Rejected {
-                    action: action.kind,
-                    message: t!("printers.bambulab.errors.control_rejected").into_owned(),
-                });
+                self.finish_action(
+                    action.finish(ControlResult::Rejected(ControlError::PrinterRejected)),
+                );
             }
             let mut candidate = report.clone();
+            let ams_reported = message["print"].get("ams_status").is_some();
             match candidate.apply(message) {
                 Ok(true) => {}
                 Ok(false) => {
@@ -271,9 +300,24 @@ impl Session<'_> {
             delivered = true;
             deadline = TokioInstant::now() + mqtt::STALE_AFTER;
             report = candidate;
+            if ams_reported && let Some(action) = pending.as_mut() {
+                action.observe_ams_status(report.value());
+            }
             self.confirm_action(&mut pending, &report);
             self.projection
                 .update(report.value(), &observation, self.model, self.detail);
+            if let Some((supply, operation)) = pending
+                .as_ref()
+                .and_then(|action| action.operation(report.value()))
+                && let Some(resource) = self
+                    .detail
+                    .machine
+                    .supplies
+                    .iter_mut()
+                    .find(|resource| resource.id == supply)
+            {
+                resource.operation = Some(operation);
+            }
             self.detail.live = *self.detail_active.borrow();
             self.detail.revision = self.detail.revision.saturating_add(1);
             let _ = self
@@ -284,6 +328,11 @@ impl Session<'_> {
 
     fn finish_action(&mut self, result: OperationState) {
         while self.actions.try_recv().is_ok() {}
+        while let Ok(command) = self.machine_actions.try_recv() {
+            let _ = command
+                .reply
+                .send(ControlResult::Rejected(ControlError::Busy));
+        }
         self.operations.send_replace(result);
     }
 
@@ -292,7 +341,7 @@ impl Session<'_> {
             .as_ref()
             .is_some_and(|action| action.confirmed(report.value(), &self.state_sender.borrow()));
         if confirmed && let Some(action) = pending.take() {
-            self.finish_action(OperationState::Accepted(action.kind));
+            self.finish_action(action.finish(ControlResult::Accepted));
         }
     }
 }
@@ -567,23 +616,49 @@ fn filament_supplies(print: &Value) -> Option<Vec<FilamentSupplyTelemetry>> {
     let exist_bits = hex(&ams["tray_exist_bits"]);
     let active = active_supplies(print);
     let mut supplies = Vec::new();
-    for unit in units.map_or(&[][..], Vec::as_slice) {
-        let Some(unit_id) = integer(&unit["id"]) else {
-            continue;
-        };
-        for tray in unit["tray"].as_array().map_or(&[][..], Vec::as_slice) {
-            let Some((id, bit)) = integer(&tray["id"]).and_then(|slot| station_slot(unit_id, slot))
-            else {
-                continue;
-            };
-            let present = exist_bits.map(|bits| (bits >> bit) & 1 == 1);
-            supplies.push(supply(id, tray, present, active.as_deref()));
-        }
+    for tray in station_trays(print) {
+        let present = exist_bits.map(|bits| (bits >> tray.bit) & 1 == 1);
+        supplies.push(supply(tray.id, tray.data, present, active.as_deref()));
     }
     for (id, tray) in externals {
         supplies.push(supply(id, tray, None, active.as_deref()));
     }
     Some(supplies)
+}
+
+struct StationTray<'a> {
+    id: ElementId,
+    bit: u32,
+    ams_id: i64,
+    slot: i64,
+    unit: &'a Value,
+    data: &'a Value,
+}
+
+fn station_trays(print: &Value) -> impl Iterator<Item = StationTray<'_>> {
+    print["ams"]["ams"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|unit| {
+            unit["tray"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(move |data| {
+                    let ams_id = integer(&unit["id"])?;
+                    let slot = integer(&data["id"])?;
+                    let (id, bit) = station_slot(ams_id, slot)?;
+                    Some(StationTray {
+                        id,
+                        bit,
+                        ams_id,
+                        slot,
+                        unit,
+                        data,
+                    })
+                })
+        })
 }
 
 /// The main nozzle's external spool is always 255. Single-nozzle firmware reports it
@@ -678,17 +753,45 @@ fn active_supplies(print: &Value) -> Option<Vec<ElementId>> {
     Some(loaded_from_tray_now(tray_now).into_iter().collect())
 }
 
-/// Supply feeding the active nozzle.
-fn active_supply(print: &Value) -> Option<ElementId> {
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct MaterialHead {
+    extruder: Option<u32>,
+    loaded: Option<ElementId>,
+}
+
+fn material_head(print: &Value) -> Option<MaterialHead> {
     let extruder = &print["device"]["extruder"];
     if let Some(entries) = extruder["info"].as_array() {
-        let active = integer(&extruder["state"]).map_or(0, |state| (state >> 4) & 0x0F);
-        let entry = entries
+        let state = integer(&extruder["state"]).filter(|state| *state >= 0)?;
+        let active = ((state >> 4) & 0xf) as u32;
+        let mut matching = entries
             .iter()
-            .find(|entry| integer(&entry["id"]) == Some(active))?;
-        return loaded_from_snow(integer(&entry["snow"])?);
+            .filter(|entry| extruder_id(entry) == Some(active));
+        let entry = matching.next()?;
+        if matching.next().is_some() {
+            return None;
+        }
+        let snow = integer(&entry["snow"]).filter(|snow| (0..=65535).contains(snow))?;
+        let loaded = if snow & 0xff == 0xff {
+            None
+        } else {
+            Some(loaded_from_snow(snow)?)
+        };
+        return Some(MaterialHead {
+            extruder: Some(active),
+            loaded,
+        });
     }
-    loaded_from_tray_now(print["ams"]["tray_now"].as_str()?)
+    let tray = integer(&print["ams"]["tray_now"])?;
+    let loaded = if tray == 255 {
+        None
+    } else {
+        Some(loaded_from_tray_now(&tray.to_string())?)
+    };
+    Some(MaterialHead {
+        extruder: None,
+        loaded,
+    })
 }
 
 /// `snow` is unit in the high byte and slot in the low byte; `0xFFFF` or slot `0xFF`

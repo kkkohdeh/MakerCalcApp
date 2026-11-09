@@ -117,8 +117,9 @@ impl Projection {
         state.devices = self.devices(print, observation, model);
         state.machine.device = metadata(report, print, model);
         state.machine.activity = activity(print);
-        state.machine.supplies = self.supplies(observation);
-        state.machine.current_supply = super::active_supply(print).and_then(|active| {
+        state.machine.supplies = self.supplies(print, observation);
+        state.machine.current_supply = super::material_head(print).and_then(|head| {
+            let active = head.loaded?;
             state
                 .machine
                 .supplies
@@ -134,7 +135,6 @@ impl Projection {
             })
             .into_iter()
             .collect();
-        // Read-only: files, camera, controls and the rest stay out of this integration.
         state.capabilities = Capabilities {
             files: Support::Unavailable,
             history: Support::Unavailable,
@@ -299,8 +299,11 @@ impl Projection {
             .collect()
     }
 
-    fn supplies(&mut self, observation: &PrinterObservation) -> Vec<SupplyResource> {
+    fn supplies(&mut self, print: &Value, observation: &PrinterObservation) -> Vec<SupplyResource> {
         let readings = observation.filament_supplies.as_deref().unwrap_or_default();
+        let trays: BTreeMap<_, _> = super::station_trays(print)
+            .map(|tray| (tray.id.0, tray))
+            .collect();
         readings
             .iter()
             .map(|reading| SupplyResource {
@@ -311,10 +314,11 @@ impl Projection {
                     SupplyKind::StationSlot
                 },
                 reading: reading.clone(),
-                // Verified read-only: no supply controls in this integration.
-                controls: Some(Vec::new()),
+                controls: Some(trays.get(&reading.id.0).map_or_else(Vec::new, |tray| {
+                    super::control::supply_controls(print, tray, reading.filament_present)
+                })),
                 operation: None,
-                valid_until: None,
+                valid_until: Some(std::time::Instant::now() + std::time::Duration::from_secs(15)),
             })
             .collect()
     }
