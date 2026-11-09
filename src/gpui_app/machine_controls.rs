@@ -22,6 +22,7 @@ use gpui_kit::{
     IntoElement, ParentElement as _, Styled as _, Task, Window, div, px,
 };
 
+mod drying;
 mod editor_fields;
 mod intent;
 mod motion;
@@ -356,6 +357,7 @@ fn label(key: &str) -> String {
 
 #[derive(Default)]
 pub(super) struct MachineControls {
+    drying: drying::State,
     editor: Option<Editor>,
     rendered: bool,
     tasks: BTreeMap<LocalPrinterId, Task<()>>,

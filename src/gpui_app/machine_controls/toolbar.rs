@@ -137,6 +137,7 @@ impl MakerCalcGpuiApp {
             .into_iter()
             .partition(|choice| matches!(choice.control, Control::Fan(_)));
         let fan_control = fan_control(id, printer, fans, pending, window, cx);
+        let drying_control = super::drying::toolbar_button(id, printer, window, cx);
         other
             .into_iter()
             .filter_map(|choice| {
@@ -247,6 +248,7 @@ impl MakerCalcGpuiApp {
                 )
             })
             .chain(fan_control)
+            .chain(drying_control)
             .collect()
     }
 }

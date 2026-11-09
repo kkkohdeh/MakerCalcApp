@@ -262,7 +262,9 @@ impl Render for MakerCalcGpuiApp {
         let printer_form = self.render_printer_form(window, cx);
         let settings = self.render_settings(window, cx);
         let material_editor = self.render_material_editor(window, cx);
-        let machine_editor = self.render_machine_editor(window, cx);
+        let machine_editor = self
+            .render_machine_editor(window, cx)
+            .or_else(|| self.render_drying_editor(window, cx));
         let mut dialog_visible = printer_form.is_some()
             || settings.is_some()
             || material_editor.is_some()
