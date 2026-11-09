@@ -91,6 +91,7 @@ enum Target {
     ChamberFan,
     FilamentSensor(u32),
     AmsSensor(i64),
+    Dryer(i64, u8),
     Supply(u32),
 }
 
@@ -101,6 +102,13 @@ pub(super) struct Projection {
 }
 
 impl Projection {
+    pub(super) fn dryer(&self, resource: ResourceId) -> Option<(i64, u8)> {
+        self.ids.iter().find_map(|(target, id)| match target {
+            Target::Dryer(unit, kind) if *id == resource => Some((*unit, *kind)),
+            _ => None,
+        })
+    }
+
     fn id(&mut self, target: Target) -> ResourceId {
         *self
             .ids
@@ -140,6 +148,17 @@ impl Projection {
                 .map(|supply| supply.id)
         });
         state.machine.material_station_slots = station_slots(print);
+        let dryers = super::drying::units(print).collect::<Vec<_>>();
+        self.ids.retain(|target, _| match target {
+            Target::Dryer(id, kind) => dryers
+                .iter()
+                .any(|unit| unit.id == *id && unit.kind == *kind),
+            _ => true,
+        });
+        state.machine.dryers = dryers
+            .into_iter()
+            .map(|unit| unit.resource(self.id(Target::Dryer(unit.id, unit.kind)), print))
+            .collect();
         state.machine.software = firmware(report)
             .map(|version| SoftwareVersion {
                 role: SoftwareRole::PrinterFirmware,

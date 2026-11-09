@@ -43,6 +43,8 @@ pub(crate) enum MachineActionKind {
     LoadFilament,
     UnloadFilament,
     CancelFilamentOperation,
+    StartDrying,
+    StopDrying,
     AcknowledgePrinterAlert,
     SetFlowOverride,
     SetPressureAdvance,
@@ -128,6 +130,13 @@ pub(crate) enum MachineAction {
     CancelFilamentOperation {
         supply_id: ResourceId,
     },
+    StartDrying {
+        dryer_id: ResourceId,
+        cycle: super::machine::DryingCycle,
+    },
+    StopDrying {
+        dryer_id: ResourceId,
+    },
     AcknowledgePrinterAlert {
         alert_id: ResourceId,
     },
@@ -200,6 +209,8 @@ impl MachineAction {
             Self::LoadFilament { .. } => K::LoadFilament,
             Self::UnloadFilament { .. } => K::UnloadFilament,
             Self::CancelFilamentOperation { .. } => K::CancelFilamentOperation,
+            Self::StartDrying { .. } => K::StartDrying,
+            Self::StopDrying { .. } => K::StopDrying,
             Self::AcknowledgePrinterAlert { .. } => K::AcknowledgePrinterAlert,
             Self::SetFlowOverride { .. } => K::SetFlowOverride,
             Self::SetPressureAdvance { .. } => K::SetPressureAdvance,
@@ -241,6 +252,7 @@ impl MachineAction {
             Self::SetPrintSpeedOverride { percent } => {
                 (1..=MAX_PRINT_SPEED_OVERRIDE_PCT).contains(percent)
             }
+            Self::StartDrying { cycle, .. } => cycle.temperature_c > 0 && cycle.duration_hours > 0,
             Self::SetFlowOverride { percent } => (1..=1000).contains(percent),
             Self::SetPressureAdvance { advance_s, .. } => {
                 advance_s.is_finite() && (0.0..=1.0).contains(advance_s)

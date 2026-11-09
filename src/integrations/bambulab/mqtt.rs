@@ -323,7 +323,13 @@ fn prune_disconnected_ams(print: &mut Value) {
     }
 }
 
-const SPOOL_FIELDS: [&str; 3] = ["remain", "nozzle_temp_min", "nozzle_temp_max"];
+const SPOOL_FIELDS: [&str; 5] = [
+    "remain",
+    "nozzle_temp_min",
+    "nozzle_temp_max",
+    "tray_info_idx",
+    "tray_type",
+];
 
 fn clear_absent_spool_data(print: &mut Value) {
     let Some(bits) = super::hex(&print["ams"]["tray_exist_bits"]) else {

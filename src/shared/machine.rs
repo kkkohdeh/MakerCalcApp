@@ -171,6 +171,48 @@ pub(crate) struct SupplyOperation {
     pub(crate) step: Option<u8>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DryingState {
+    Idle,
+    Starting,
+    Drying,
+    Cooling,
+    Stopping,
+    Fault,
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct DryingCycle {
+    pub(crate) temperature_c: u16,
+    pub(crate) duration_hours: u16,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct DryingLimits {
+    pub(crate) temperature_c: [u16; 2],
+    pub(crate) duration_hours: [u16; 2],
+}
+
+impl DryingLimits {
+    pub(crate) fn contains(self, cycle: DryingCycle) -> bool {
+        (self.temperature_c[0]..=self.temperature_c[1]).contains(&cycle.temperature_c)
+            && (self.duration_hours[0]..=self.duration_hours[1]).contains(&cycle.duration_hours)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DryerResource {
+    pub(crate) id: ResourceId,
+    pub(crate) label: String,
+    pub(crate) state: DryingState,
+    pub(crate) remaining_minutes: Option<u16>,
+    pub(crate) target: Option<DryingCycle>,
+    pub(crate) limits: Option<DryingLimits>,
+    pub(crate) can_start: bool,
+    pub(crate) can_stop: bool,
+}
+
 /// Nonterminal machine activity, independent of a print's final result.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -234,6 +276,8 @@ pub(crate) struct MachineInfo {
     pub(crate) material_station_slots: Option<u8>,
     #[serde(skip)]
     pub(crate) material_station_sensors: Vec<ResourceId>,
+    #[serde(skip)]
+    pub(crate) dryers: Vec<DryerResource>,
     #[serde(skip)]
     pub(crate) material_motion_idle: Option<bool>,
     /// True only when all reported access panels are closed; None means no confirmed sensor.

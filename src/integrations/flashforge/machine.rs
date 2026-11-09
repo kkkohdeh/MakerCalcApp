@@ -1168,6 +1168,8 @@ impl Projection {
             | MachineAction::SetPrintQueuePaused { .. }
             | MachineAction::ExcludePrintObject { .. }
             | MachineAction::SetPowerEnabled { .. }
+            | MachineAction::StartDrying { .. }
+            | MachineAction::StopDrying { .. }
             | MachineAction::SetLightBrightness { .. } => return Err(ControlError::Unsupported),
             MachineAction::ConfigureFilamentSupply {
                 supply_id,

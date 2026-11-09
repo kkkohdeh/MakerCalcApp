@@ -4,6 +4,7 @@
 //! observation and `machine` into the device inventory.
 
 mod control;
+mod drying;
 mod machine;
 mod mqtt;
 
@@ -236,9 +237,20 @@ impl Session<'_> {
                         let _ = command.reply.send(ControlResult::Rejected(ControlError::SendFailed));
                         return (mqtt::Error::Protocol("packet identifiers exhausted"), delivered);
                     };
-                    let prepared = control::Pending::prepare_machine(
-                        command, &self.state_sender.borrow(), report.value(), self.detail, id,
-                    );
+                    let prepared = {
+                        let state = self.state_sender.borrow();
+                        match command.action {
+                            crate::shared::control::MachineAction::StartDrying { .. }
+                            | crate::shared::control::MachineAction::StopDrying { .. } => {
+                                control::Pending::prepare_drying(
+                                    command, &state, report.value(), self.detail, self.projection, id,
+                                )
+                            }
+                            _ => control::Pending::prepare_machine(
+                                command, &state, report.value(), self.detail, id,
+                            ),
+                        }
+                    };
                     if let Some((prepared, payload)) = prepared {
                         self.operations.send_replace(OperationState::Sending(prepared.kind));
                         packet_id = id;
@@ -304,6 +316,13 @@ impl Session<'_> {
             delivered = true;
             deadline = TokioInstant::now() + mqtt::STALE_AFTER;
             report = candidate;
+            if pending
+                .as_ref()
+                .is_some_and(|action| action.dryer_missing(report.value()))
+                && let Some(action) = pending.take()
+            {
+                self.finish_action(action.finish(ControlResult::Unknown));
+            }
             if ams_reported && let Some(action) = pending.as_mut() {
                 action.observe_ams_status(report.value());
             }

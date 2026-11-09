@@ -614,6 +614,28 @@
       "filament_jam": "Filament movement is blocked",
       "station_homing_failed": "Material station could not home"
     },
+    "drying": {
+      "title": "Dry filament",
+      "unit": "Dryer",
+      "temperature": "Temperature (°C)",
+      "duration": "Duration (h)",
+      "temperature_range": "%{min}–%{max} °C",
+      "duration_range": "%{min}–%{max} h",
+      "remaining": "Time remaining · %{hours} h %{minutes} min",
+      "target": "Target · %{temperature} °C for %{hours} h",
+      "idle": "Idle",
+      "starting": "Preparing to dry",
+      "running": "Drying",
+      "cooling": "Cooling",
+      "stopping": "Stopping",
+      "fault": "Drying error",
+      "start": "Start",
+      "stop": "Stop",
+      "unavailable": "The selected dryer is no longer available.",
+      "material_unknown": "A safe temperature limit for the filament in this unit is unavailable.",
+      "check_spools": "Check that all spools can handle the selected temperature.",
+      "start_blocked": "Drying can start when the printer and dryer are available."
+    },
     "controls": {
       "speed": "Print speed (%)",
       "speed_profile": "%{profile} (%{percent}%)",

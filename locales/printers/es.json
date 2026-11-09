@@ -614,6 +614,28 @@
       "filament_jam": "El movimiento del filamento está bloqueado",
       "station_homing_failed": "La estación de material no pudo referenciarse"
     },
+    "drying": {
+      "title": "Secar filamento",
+      "unit": "Secador",
+      "temperature": "Temperatura (°C)",
+      "duration": "Duración (h)",
+      "temperature_range": "%{min}–%{max} °C",
+      "duration_range": "%{min}–%{max} h",
+      "remaining": "Tiempo restante · %{hours} h %{minutes} min",
+      "target": "Objetivo · %{temperature} °C durante %{hours} h",
+      "idle": "En espera",
+      "starting": "Preparando secado",
+      "running": "Secando",
+      "cooling": "Enfriando",
+      "stopping": "Deteniendo",
+      "fault": "Error de secado",
+      "start": "Iniciar",
+      "stop": "Detener",
+      "unavailable": "El secador seleccionado ya no está disponible.",
+      "material_unknown": "Falta confirmar el límite térmico del filamento en esta unidad.",
+      "check_spools": "Comprueba que todas las bobinas admitan la temperatura elegida.",
+      "start_blocked": "El secado puede iniciarse cuando la impresora y el secador estén disponibles."
+    },
     "controls": {
       "speed": "Velocidad de impresión (%)",
       "speed_profile": "%{profile} (%{percent} %)",

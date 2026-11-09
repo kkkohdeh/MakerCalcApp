@@ -7,8 +7,8 @@ use crate::shared::control::{
     ControlError, ControlResult, MachineAction, MachineActionKind, MachineCommand,
 };
 use crate::shared::machine::{
-    PrintSpeedProfile, PrintSpeedProfiles, SupplyBlock, SupplyControl, SupplyOperation,
-    SupplyOperationPhase,
+    DryingCycle, PrintSpeedProfile, PrintSpeedProfiles, SupplyBlock, SupplyControl,
+    SupplyOperation, SupplyOperationPhase,
 };
 use crate::shared::telemetry::ElementId;
 use crate::shared::workspace::{
@@ -19,7 +19,7 @@ use crate::state::{LanConnection, MachineJobTarget, PrinterState};
 
 use super::{MaterialHead, material_head};
 
-fn unsigned_controls(print: &Value) -> bool {
+pub(super) fn unsigned_controls(print: &Value) -> bool {
     print
         .get("fun")
         .is_none_or(|value| super::hex(value).is_some_and(|bits| bits & 0x2000_0000 == 0))
@@ -50,7 +50,7 @@ pub(super) fn temperature_targets(print: &Value) -> Vec<HeaterKind> {
         .collect()
 }
 
-fn can_heat(print: &Value) -> bool {
+pub(super) fn can_heat(print: &Value) -> bool {
     unsigned_controls(print)
         && matches!(print["gcode_state"].as_str(), Some("IDLE" | "FINISH"))
         && print
@@ -126,7 +126,7 @@ fn light_target(print: &Value, role: LightRole) -> Option<(&'static str, bool)> 
     }
 }
 
-fn ams_phase(print: &Value) -> Option<i64> {
+pub(super) fn ams_phase(print: &Value) -> Option<i64> {
     super::integer(&print["ams_status"])
         .filter(|status| (0..=65535).contains(status))
         .map(|status| status >> 8)
@@ -247,6 +247,11 @@ pub(super) fn supply_controls(
 enum Setting {
     Speed(PrintSpeedProfile),
     Temperature(HeaterKind, u16),
+    Dryer {
+        unit: i64,
+        kind: u8,
+        cycle: Option<DryingCycle>,
+    },
 }
 
 enum Target {
@@ -480,6 +485,68 @@ impl Pending {
         }
     }
 
+    pub(super) fn prepare_drying(
+        command: MachineCommand,
+        state: &PrinterState,
+        report: &Value,
+        detail: &DetailState,
+        projection: &super::machine::Projection,
+        id: u16,
+    ) -> Option<(Self, Value)> {
+        let prepare = || {
+            command.action.validate()?;
+            let (resource, cycle) = match command.action {
+                MachineAction::StartDrying { dryer_id, cycle } => (dryer_id, Some(cycle)),
+                MachineAction::StopDrying { dryer_id } => (dryer_id, None),
+                _ => return Err(ControlError::Unsupported),
+            };
+            if state.connection != LanConnection::Connected {
+                return Err(ControlError::Disconnected);
+            }
+            if !detail.live || !fresh_request(state, command.connection_epoch, command.submitted_at)
+            {
+                return Err(ControlError::StaleResource);
+            }
+            let (unit, kind) = projection
+                .dryer(resource)
+                .ok_or(ControlError::StaleResource)?;
+            let print = &report["print"];
+            let source = super::drying::units(print)
+                .find(|source| source.id == unit && source.kind == kind)
+                .ok_or(ControlError::StaleResource)?;
+            let current = source.resource(resource, print);
+            if let Some(cycle) = cycle {
+                if !current.can_start {
+                    return Err(ControlError::InvalidState);
+                }
+                if !current.limits.is_some_and(|limits| limits.contains(cycle)) {
+                    return Err(ControlError::InvalidData);
+                }
+            } else if !current.can_stop {
+                return Err(ControlError::InvalidState);
+            }
+            let payload = source
+                .payload(print, cycle)
+                .ok_or(ControlError::InvalidState)?;
+            Ok((Setting::Dryer { unit, kind, cycle }, payload))
+        };
+        match prepare() {
+            Ok((expected, payload)) => Some(Self::setting(
+                id,
+                Kind::MachineControl,
+                state,
+                expected,
+                Some(command.reply),
+                "ams_filament_drying",
+                payload,
+            )),
+            Err(error) => {
+                let _ = command.reply.send(ControlResult::Rejected(error));
+                None
+            }
+        }
+    }
+
     pub(super) fn prepare_filament(
         command: MachineCommand,
         state: &PrinterState,
@@ -627,11 +694,18 @@ impl Pending {
                 ..
             } => {
                 state.revision > revision
-                    && state.job_generation == job
                     && match expected {
-                        Setting::Speed(profile) => speed_profile(print) == Some(profile),
+                        Setting::Speed(profile) => {
+                            state.job_generation == job && speed_profile(print) == Some(profile)
+                        }
                         Setting::Temperature(heater, target) => {
-                            heater_target(print, heater) == Some(f64::from(target))
+                            state.job_generation == job
+                                && heater_target(print, heater) == Some(f64::from(target))
+                        }
+                        Setting::Dryer { unit, kind, cycle } => {
+                            super::drying::units(print).any(|source| {
+                                source.id == unit && source.kind == kind && source.confirms(cycle)
+                            })
                         }
                     }
             }
@@ -661,6 +735,18 @@ impl Pending {
         {
             *ams_idle_reported = ams_phase(&report["print"]) == Some(0);
         }
+    }
+
+    pub(super) fn dryer_missing(&self, report: &Value) -> bool {
+        if let Target::Setting {
+            expected: Setting::Dryer { unit, kind, .. },
+            ..
+        } = self.target
+        {
+            return !super::drying::units(&report["print"])
+                .any(|source| source.id == unit && source.kind == kind);
+        }
+        false
     }
 
     pub(super) fn operation(&self, report: &Value) -> Option<(ResourceId, SupplyOperation)> {
