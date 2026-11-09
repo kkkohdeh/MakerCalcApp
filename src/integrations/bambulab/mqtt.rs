@@ -1,7 +1,6 @@
 //! Local MQTT session with a Bambu Lab printer and the report it accumulates.
 //!
-//! The printer runs its own broker on port 8883. This is the MQTT 3.1.1 subset a
-//! read-only session needs: connect, subscribe, QoS 0 publish and keepalive.
+//! The printer runs its own MQTT 3.1.1 broker on port 8883.
 //! The printer serial identifies the TLS peer even when TCP dials an IP address.
 
 use std::time::Duration;
@@ -59,7 +58,7 @@ pub(super) struct Connection {
     stream: TlsStream<TcpStream>,
     buffer: Vec<u8>,
     report_topic: String,
-    last_received: Instant,
+    request_topic: String,
     last_sent: Instant,
 }
 
@@ -84,13 +83,13 @@ impl Connection {
             stream,
             buffer: Vec::new(),
             report_topic: format!("device/{serial}/report"),
-            last_received: now,
+            request_topic: format!("device/{serial}/request"),
             last_sent: now,
         };
         connection
             .write(&connect_packet(&client_id(), access_code))
             .await?;
-        let ack = timeout(CONNECT_TIMEOUT, connection.next_packet())
+        let ack = timeout(CONNECT_TIMEOUT, connection.read_packet())
             .await
             .map_err(|_| Error::Network("timeout".into()))??;
         match (ack.header, ack.body.as_slice()) {
@@ -98,33 +97,43 @@ impl Connection {
             (0x20, [0, 4 | 5]) => return Err(Error::Rejected),
             _ => return Err(Error::Protocol("connect")),
         }
-        let request_topic = format!("device/{serial}/request");
         let subscribe = subscribe_packet(1, &connection.report_topic);
         connection.write(&subscribe).await?;
         connection
-            .write(&publish_packet(&request_topic, PUSHALL))
+            .write(&publish_packet(&connection.request_topic, PUSHALL, None))
             .await?;
         connection
-            .write(&publish_packet(&request_topic, GET_VERSION))
+            .write(&publish_packet(
+                &connection.request_topic,
+                GET_VERSION,
+                None,
+            ))
             .await?;
         Ok(connection)
     }
 
-    /// Next JSON message on the report topic.
-    pub(super) async fn next_message(&mut self) -> Result<Value, Error> {
-        loop {
-            let packet = self.next_packet().await?;
-            match packet.header >> 4 {
-                3 => {
-                    if let Some(message) = self.publish(&packet).await? {
-                        return Ok(message);
-                    }
-                }
-                9 if packet.header == 0x90 && packet.body == [0, 1, 0] => {}
-                9 => return Err(Error::Protocol("subscribe")),
-                _ => {}
+    pub(super) async fn message(&mut self, packet: Packet) -> Result<Option<Value>, Error> {
+        match packet.header >> 4 {
+            3 => self.publish(&packet).await,
+            9 if packet.header != 0x90 || packet.body != [0, 1, 0] => {
+                Err(Error::Protocol("subscribe"))
             }
+            _ => Ok(None),
         }
+    }
+
+    pub(super) async fn send_control(&mut self, id: u16, command: &Value) -> Result<(), Error> {
+        let payload = serde_json::to_vec(command).map_err(|_| Error::Protocol("command JSON"))?;
+        self.write(&publish_packet(&self.request_topic, &payload, Some(id)))
+            .await
+    }
+
+    pub(super) fn ping_at(&self) -> Instant {
+        self.last_sent + PING_AFTER
+    }
+
+    pub(super) async fn ping(&mut self) -> Result<(), Error> {
+        self.write(&[0xC0, 0x00]).await
     }
 
     async fn publish(&mut self, packet: &Packet) -> Result<Option<Value>, Error> {
@@ -158,31 +167,22 @@ impl Connection {
             .map_err(|_| Error::Protocol("json"))
     }
 
-    async fn next_packet(&mut self) -> Result<Packet, Error> {
+    // Reads are cancellation-safe; the actor sends ACKs and pings outside its select.
+    pub(super) async fn read_packet(&mut self) -> Result<Packet, Error> {
         loop {
             if let Some(packet) = take_packet(&mut self.buffer)? {
                 return Ok(packet);
             }
-            if self.last_received.elapsed() >= STALE_AFTER {
-                return Err(Error::Stale);
-            }
-            if self.last_sent.elapsed() >= PING_AFTER {
-                self.write(&[0xC0, 0x00]).await?;
-            }
-            let wait = PING_AFTER
-                .saturating_sub(self.last_sent.elapsed())
-                .min(STALE_AFTER.saturating_sub(self.last_received.elapsed()))
-                .max(Duration::from_millis(50));
             let mut chunk = [0_u8; 16 * 1024];
-            match timeout(wait, self.stream.read(&mut chunk)).await {
-                Err(_) => {}
-                Ok(Ok(0)) => return Err(Error::Network("closed".into())),
-                Ok(Ok(read)) => {
-                    self.buffer.extend_from_slice(&chunk[..read]);
-                    self.last_received = Instant::now();
-                }
-                Ok(Err(error)) => return Err(Error::Network(error.to_string())),
+            let read = self
+                .stream
+                .read(&mut chunk)
+                .await
+                .map_err(|error| Error::Network(error.to_string()))?;
+            if read == 0 {
+                return Err(Error::Network("closed".into()));
             }
+            self.buffer.extend_from_slice(&chunk[..read]);
         }
     }
 
@@ -357,7 +357,7 @@ fn key(item: &Value) -> Option<&Value> {
     item.get("id").or_else(|| item.get("node"))
 }
 
-struct Packet {
+pub(super) struct Packet {
     header: u8,
     body: Vec<u8>,
 }
@@ -412,11 +412,14 @@ fn subscribe_packet(id: u16, topic: &str) -> Vec<u8> {
     frame(0x82, &body)
 }
 
-fn publish_packet(topic: &str, payload: &[u8]) -> Vec<u8> {
+fn publish_packet(topic: &str, payload: &[u8], packet_id: Option<u16>) -> Vec<u8> {
     let mut body = Vec::new();
     put_str(&mut body, topic);
+    if let Some(id) = packet_id {
+        body.extend_from_slice(&id.to_be_bytes());
+    }
     body.extend_from_slice(payload);
-    frame(0x30, &body)
+    frame(if packet_id.is_some() { 0x32 } else { 0x30 }, &body)
 }
 
 fn frame(header: u8, body: &[u8]) -> Vec<u8> {

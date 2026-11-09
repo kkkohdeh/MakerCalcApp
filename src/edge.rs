@@ -614,6 +614,9 @@ impl EdgeActor {
                 None
             }
         };
+        if printer.connection.protocol == Protocol::Bambulab {
+            initial_state.controls = Default::default();
+        }
         let (state_sender, state_receiver) = watch::channel(initial_state);
         let (driver_shutdown_sender, driver_shutdown) = watch::channel(false);
         let (detail, detail_io) = make_detail_channels();
@@ -640,7 +643,7 @@ impl EdgeActor {
                 operation_io
                     .state
                     .send_replace(crate::shared::workspace::OperationState::ReadOnly);
-                drop((operation_io, camera_io, thumbnail_io));
+                drop((camera_io, thumbnail_io));
                 self.runtime
                     .spawn(crate::integrations::bambulab::run_driver(
                         printer.connection.host,
@@ -649,6 +652,7 @@ impl EdgeActor {
                         state_sender,
                         driver_shutdown,
                         detail_io,
+                        operation_io,
                     ))
             }
             Protocol::Moonraker => {

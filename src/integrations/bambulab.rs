@@ -1,8 +1,9 @@
-//! Bambu Lab printers over the local MQTT report, read-only.
+//! Bambu Lab printers over local MQTT.
 //!
 //! `mqtt` keeps the latest report, this module translates it into the shared printer
 //! observation and `machine` into the device inventory.
 
+mod control;
 mod machine;
 mod mqtt;
 
@@ -10,7 +11,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
+use tokio::time::{Instant as TokioInstant, sleep_until};
 
 use crate::i18n::t;
 use crate::shared::printer::{PrintStatus, PrinterObservation};
@@ -19,7 +21,7 @@ use crate::shared::telemetry::{
     LightTelemetry, MAX_LIGHTS, NozzleTelemetry, PartCoolingFanTelemetry, PrinterAlert,
     SupplyState,
 };
-use crate::shared::workspace::{DetailIo, DetailState};
+use crate::shared::workspace::{DetailIo, DetailState, OperationIo, OperationState, PrinterAction};
 use crate::state::{LanConnection, PrinterState, sanitize_message};
 
 /// `print_error` when the user cancels: the job ends as cancelled, not failed.
@@ -41,6 +43,7 @@ pub(crate) async fn run_driver(
     state_sender: watch::Sender<PrinterState>,
     mut shutdown: watch::Receiver<bool>,
     detail_io: DetailIo,
+    operation_io: OperationIo,
 ) {
     let Some((serial, access_code)) = credential
         .as_deref()
@@ -60,6 +63,12 @@ pub(crate) async fn run_driver(
         state: detail_sender,
     } = detail_io;
     drop((file_interest, requests));
+    let OperationIo {
+        mut actions,
+        state: operations,
+        machine_actions,
+    } = operation_io;
+    drop(machine_actions);
     let model = machine::model_for_serial(serial);
     let mut generation = 0_u64;
     let mut retry = RETRY_MIN;
@@ -80,6 +89,8 @@ pub(crate) async fn run_driver(
             detail_sender: &detail_sender,
             projection: &mut projection,
             detail: &mut detail,
+            actions: &mut actions,
+            operations: &operations,
         };
         let (error, delivered) = tokio::select! {
             _ = shutdown.changed() => break,
@@ -93,8 +104,17 @@ pub(crate) async fn run_driver(
                 LanConnection::Disconnected
             };
             let _ = state.set_connection(connection);
+            state.controls = Default::default();
             let _ = state.record_error(error_message(&error));
         });
+        while actions.try_recv().is_ok() {}
+        let interrupted = match *operations.borrow() {
+            OperationState::Sending(kind) => Some(kind),
+            _ => None,
+        };
+        if let Some(kind) = interrupted {
+            operations.send_replace(OperationState::Unknown(kind));
+        }
         detail.live = false;
         detail.revision = detail.revision.saturating_add(1);
         let _ = detail_sender.send_replace(Arc::new(detail.clone()));
@@ -123,12 +143,14 @@ struct Session<'a> {
     detail_sender: &'a watch::Sender<Arc<DetailState>>,
     projection: &'a mut machine::Projection,
     detail: &'a mut DetailState,
+    actions: &'a mut mpsc::Receiver<PrinterAction>,
+    operations: &'a watch::Sender<OperationState>,
 }
 
 impl Session<'_> {
     /// Returns why the session ended and whether it delivered any report.
     async fn run(
-        self,
+        mut self,
         host: &str,
         port: u16,
         serial: &str,
@@ -140,18 +162,85 @@ impl Session<'_> {
         };
         let mut report = mqtt::Report::default();
         let mut delivered = false;
-        let mut deadline = tokio::time::Instant::now() + mqtt::STALE_AFTER;
+        let mut deadline = TokioInstant::now() + mqtt::STALE_AFTER;
+        let mut pending: Option<control::Pending> = None;
+        // Never reuse a packet identifier during this session, even after a timeout.
+        let mut packet_id = 1_u16;
         loop {
-            let message = match tokio::time::timeout_at(deadline, connection.next_message()).await {
-                Ok(Ok(message)) => message,
-                Ok(Err(error)) => return (error, delivered),
-                Err(_) => return (mqtt::Error::Stale, delivered),
+            let wake = pending
+                .as_ref()
+                .map_or(deadline, |action| deadline.min(action.deadline));
+            let ping_at = connection.ping_at();
+            let packet = tokio::select! {
+                packet = connection.read_packet() => packet,
+                () = sleep_until(wake) => {
+                    if TokioInstant::now() >= deadline {
+                        return (mqtt::Error::Stale, delivered);
+                    }
+                    if let Some(action) = pending.take() {
+                        self.finish_action(OperationState::Unknown(action.kind));
+                    }
+                    continue;
+                }
+                () = sleep_until(ping_at) => {
+                    if let Err(error) = connection.ping().await {
+                        return (error, delivered);
+                    }
+                    continue;
+                }
+                Some(action) = self.actions.recv() => {
+                    if pending.is_none() {
+                        let Some(id) = packet_id.checked_add(1) else {
+                            self.finish_action(OperationState::Rejected {
+                                action: action.kind(),
+                                message: t!("printers.bambulab.errors.control_unavailable").into_owned(),
+                            });
+                            return (mqtt::Error::Protocol("packet identifiers exhausted"), delivered);
+                        };
+                        let command = control::Pending::prepare(
+                            &action, &self.state_sender.borrow(), report.value(), id,
+                        );
+                        if let Some((prepared, payload)) = command {
+                            self.operations.send_replace(OperationState::Sending(prepared.kind));
+                            packet_id = id;
+                            if let Err(error) = connection.send_control(id, &payload).await {
+                                return (error, delivered);
+                            }
+                            pending = Some(prepared);
+                        } else {
+                            self.finish_action(OperationState::Rejected {
+                                action: action.kind(),
+                                message: t!("printers.bambulab.errors.control_unavailable").into_owned(),
+                            });
+                        }
+                    }
+                    continue;
+                }
             };
+            let message = match packet {
+                Ok(packet) => match connection.message(packet).await {
+                    Ok(Some(message)) => message,
+                    Ok(None) => continue,
+                    Err(error) => return (error, delivered),
+                },
+                Err(error) => return (error, delivered),
+            };
+            if pending
+                .as_mut()
+                .is_some_and(|action| !action.acknowledge(&message))
+                && let Some(action) = pending.take()
+            {
+                self.finish_action(OperationState::Rejected {
+                    action: action.kind,
+                    message: t!("printers.bambulab.errors.control_rejected").into_owned(),
+                });
+            }
             let mut candidate = report.clone();
             match candidate.apply(message) {
                 Ok(true) => {}
                 Ok(false) => {
                     report = candidate;
+                    self.confirm_action(&mut pending, &report);
                     continue;
                 }
                 Err(error) => return (error, delivered),
@@ -169,15 +258,20 @@ impl Session<'_> {
                         .into_owned(),
                     );
                 } else {
+                    state.controls = control::availability(candidate.value());
                     accepted = true;
                 }
             });
             if !accepted {
                 continue;
             }
+            if matches!(*self.operations.borrow(), OperationState::ReadOnly) {
+                self.operations.send_replace(OperationState::Idle);
+            }
             delivered = true;
-            deadline = tokio::time::Instant::now() + mqtt::STALE_AFTER;
+            deadline = TokioInstant::now() + mqtt::STALE_AFTER;
             report = candidate;
+            self.confirm_action(&mut pending, &report);
             self.projection
                 .update(report.value(), &observation, self.model, self.detail);
             self.detail.live = *self.detail_active.borrow();
@@ -185,6 +279,20 @@ impl Session<'_> {
             let _ = self
                 .detail_sender
                 .send_replace(Arc::new(self.detail.clone()));
+        }
+    }
+
+    fn finish_action(&mut self, result: OperationState) {
+        while self.actions.try_recv().is_ok() {}
+        self.operations.send_replace(result);
+    }
+
+    fn confirm_action(&mut self, pending: &mut Option<control::Pending>, report: &mqtt::Report) {
+        let confirmed = pending
+            .as_ref()
+            .is_some_and(|action| action.confirmed(report.value(), &self.state_sender.borrow()));
+        if confirmed && let Some(action) = pending.take() {
+            self.finish_action(OperationState::Accepted(action.kind));
         }
     }
 }
@@ -610,28 +718,29 @@ fn loaded_from_tray_now(tray_now: &str) -> Option<ElementId> {
 }
 
 /// Fixed ids keep each light stable when another one appears or disappears.
+fn light_node(node: &str) -> Option<(&'static str, ElementId, LightRole)> {
+    let (name, id, role) = match node {
+        "chamber_light" => ("chamber_light", 1, LightRole::BuildArea),
+        "chamber_light2" => ("chamber_light2", 2, LightRole::BuildArea),
+        "work_light" => ("work_light", 3, LightRole::Toolhead),
+        _ => return None,
+    };
+    Some((name, ElementId(id), role))
+}
+
 fn lights(print: &Value) -> Vec<LightTelemetry> {
     let mut lights: Vec<LightTelemetry> = print["lights_report"]
         .as_array()
         .map_or(&[][..], Vec::as_slice)
         .iter()
         .filter_map(|light| {
-            let (id, role) = match light["node"].as_str()? {
-                "chamber_light" => (1, LightRole::BuildArea),
-                "chamber_light2" => (2, LightRole::BuildArea),
-                "work_light" => (3, LightRole::Toolhead),
-                _ => return None,
-            };
+            let (_, id, role) = light_node(light["node"].as_str()?)?;
             let enabled = match light["mode"].as_str() {
                 Some("on" | "flashing") => Some(true),
                 Some("off") => Some(false),
                 _ => None,
             };
-            Some(LightTelemetry {
-                id: ElementId(id),
-                role,
-                enabled,
-            })
+            Some(LightTelemetry { id, role, enabled })
         })
         .collect();
     lights.truncate(MAX_LIGHTS);

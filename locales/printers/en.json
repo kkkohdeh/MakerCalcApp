@@ -716,7 +716,9 @@
         "tls": "Could not verify the printer certificate: %{detail}",
         "protocol": "The printer sent an invalid MQTT response: %{detail}",
         "stale": "The printer stopped sending its status",
-        "invalid_report": "The printer sent an impossible state: %{detail}"
+        "invalid_report": "The printer sent an impossible state: %{detail}",
+        "control_unavailable": "This action is unavailable in the current printer state.",
+        "control_rejected": "The printer rejected the command."
       }
     }
   }

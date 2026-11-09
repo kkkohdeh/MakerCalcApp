@@ -855,7 +855,7 @@ impl Projection {
                 }
                 local::PrinterAction::SetTemperatureTarget { heater, target_c }
             }
-            A::ToggleLight { role } => {
+            A::ToggleLight { role, .. } => {
                 let binding = match role {
                     LightRole::BuildArea => self.light_bindings.build_area.as_ref(),
                     LightRole::Toolhead => self.light_bindings.toolhead.as_ref(),

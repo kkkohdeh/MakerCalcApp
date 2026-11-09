@@ -322,6 +322,8 @@ fn light_buttons(id: LocalPrinterId, printer: &PrinterEntry, cx: &App) -> Vec<An
         .filter(|light| printer.state.controls.allows_light(light.role))
         .map(|light| {
             let role = light.role;
+            let expected_enabled = light.enabled;
+            let connection_epoch = printer.state.connection_epoch;
             let sender = printer.actions.clone();
             let (key, label) = match (role, light.enabled) {
                 (LightRole::BuildArea, Some(true)) => {
@@ -389,7 +391,12 @@ fn light_buttons(id: LocalPrinterId, printer: &PrinterEntry, cx: &App) -> Vec<An
                 .disabled(disabled)
                 .on_click(move |_, _, cx| {
                     cx.stop_propagation();
-                    let _ = sender.try_send(PrinterAction::ToggleLight { role });
+                    let _ = sender.try_send(PrinterAction::ToggleLight {
+                        role,
+                        expected_enabled,
+                        connection_epoch,
+                        submitted_at: std::time::Instant::now(),
+                    });
                 })
                 .into_any_element()
         })

@@ -1778,7 +1778,7 @@ async fn run_detail_handler(
                         .await;
                     }
 
-                    PrinterAction::ToggleLight { role } => {
+                    PrinterAction::ToggleLight { role, .. } => {
                         let kind = PrinterActionKind::SetLight;
                         if role != LightRole::BuildArea {
                             let _ = operation_io.state.send_replace(OperationState::Rejected {

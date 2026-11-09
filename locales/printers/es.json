@@ -716,7 +716,9 @@
         "tls": "No se pudo verificar el certificado de la impresora: %{detail}",
         "protocol": "La impresora envió una respuesta MQTT inválida: %{detail}",
         "stale": "La impresora dejó de enviar su estado",
-        "invalid_report": "La impresora envió un estado imposible: %{detail}"
+        "invalid_report": "La impresora envió un estado imposible: %{detail}",
+        "control_unavailable": "Esta acción no está disponible en el estado actual de la impresora.",
+        "control_rejected": "La impresora rechazó la orden."
       }
     }
   }

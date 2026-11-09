@@ -523,6 +523,9 @@ pub(crate) enum PrinterAction {
     },
     ToggleLight {
         role: LightRole,
+        expected_enabled: Option<bool>,
+        connection_epoch: u64,
+        submitted_at: Instant,
     },
     UploadGcode {
         source: PathBuf,

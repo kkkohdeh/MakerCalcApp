@@ -580,14 +580,21 @@ pub(super) fn dispatch_command(
         (CommandAction::CancelPrint, None, PrintStatus::Printing | PrintStatus::Paused) => {
             PrinterAction::CancelPrint(context)
         }
-        (CommandAction::ToggleLight, Some(role), _)
-            if state
+        (CommandAction::ToggleLight, Some(role), _) => {
+            let Some(enabled) = state
                 .telemetry
                 .lights
                 .iter()
-                .any(|light| light.role == role && light.enabled.is_some()) =>
-        {
-            PrinterAction::ToggleLight { role }
+                .find_map(|light| (light.role == role).then_some(light.enabled).flatten())
+            else {
+                return;
+            };
+            PrinterAction::ToggleLight {
+                role,
+                expected_enabled: Some(enabled),
+                connection_epoch: context.connection_epoch,
+                submitted_at: context.submitted_at,
+            }
         }
         _ => return,
     };
