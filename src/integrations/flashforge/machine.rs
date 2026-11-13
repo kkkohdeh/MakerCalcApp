@@ -1239,13 +1239,7 @@ impl Projection {
 }
 
 fn valid_color(value: Option<&str>) -> Option<String> {
-    value
-        .filter(|s| {
-            s.len() == 7
-                && s.starts_with('#')
-                && s.as_bytes()[1..].iter().all(u8::is_ascii_hexdigit)
-        })
-        .map(str::to_owned)
+    value.filter(|s| super::is_hex_color(s)).map(str::to_owned)
 }
 fn open(enabled: bool) -> &'static str {
     if enabled { "open" } else { "close" }

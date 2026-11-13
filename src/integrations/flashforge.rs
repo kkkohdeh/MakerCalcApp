@@ -430,30 +430,16 @@ pub(crate) fn parse_detail_to_observation(
         None => None,
     };
 
-    let alerts = if let Some(code) = &detail.error_code {
-        let trimmed = code.trim();
-        if !trimmed.is_empty() && trimmed != "0" {
-            Some(vec![PrinterAlert::new(
-                "print_error",
-                sanitize_message(trimmed, 512),
-            )])
-        } else if status == PrintStatus::Error {
-            Some(vec![PrinterAlert::new(
-                "print_error",
-                "Fallo confirmado de impresora FlashForge".to_owned(),
-            )])
-        } else if matches!(
-            status,
-            PrintStatus::Idle
-                | PrintStatus::Printing
-                | PrintStatus::Paused
-                | PrintStatus::Completed
-                | PrintStatus::Cancelled
-        ) {
-            Some(Vec::new())
-        } else {
-            None
-        }
+    let error_code = detail
+        .error_code
+        .as_deref()
+        .map(str::trim)
+        .filter(|trimmed| !trimmed.is_empty() && *trimmed != "0");
+    let alerts = if let Some(trimmed) = error_code {
+        Some(vec![PrinterAlert::new(
+            "print_error",
+            sanitize_message(trimmed, 512),
+        )])
     } else if status == PrintStatus::Error {
         Some(vec![PrinterAlert::new(
             "print_error",
@@ -581,51 +567,27 @@ pub(crate) fn parse_detail_to_observation(
             })
     };
 
-    let filament_used_mm = match (detail.estimated_right_len, detail.estimated_left_len) {
-        (Some(r), Some(l)) => {
-            if !r.is_finite() || r < 0.0 || !l.is_finite() || l < 0.0 {
-                return Err(ValidationError::InvalidFilament);
-            }
-            Some(r + l)
+    fn nonneg_finite(value: Option<f64>) -> Result<Option<f64>, ValidationError> {
+        match value {
+            Some(v) if v.is_finite() && v >= 0.0 => Ok(Some(v)),
+            Some(_) => Err(ValidationError::InvalidFilament),
+            None => Ok(None),
         }
-        (Some(r), None) => {
-            if !r.is_finite() || r < 0.0 {
-                return Err(ValidationError::InvalidFilament);
-            }
-            Some(r)
-        }
-        (None, Some(l)) => {
-            if !l.is_finite() || l < 0.0 {
-                return Err(ValidationError::InvalidFilament);
-            }
-            Some(l)
-        }
+    }
+
+    let right_len = nonneg_finite(detail.estimated_right_len)?;
+    let left_len = nonneg_finite(detail.estimated_left_len)?;
+    let filament_used_mm = match (right_len, left_len) {
+        (Some(r), Some(l)) => Some(r + l),
+        (Some(v), None) | (None, Some(v)) => Some(v),
         (None, None) => None,
     };
 
-    let filament_used_g = match (detail.estimated_right_weight, detail.estimated_left_weight) {
-        (Some(r), Some(l)) => {
-            if !r.is_finite() || r < 0.0 || !l.is_finite() || l < 0.0 {
-                return Err(ValidationError::InvalidFilament);
-            }
-            if r > 0.0 || l > 0.0 {
-                Some(r + l)
-            } else {
-                None
-            }
-        }
-        (Some(r), None) => {
-            if !r.is_finite() || r < 0.0 {
-                return Err(ValidationError::InvalidFilament);
-            }
-            if r > 0.0 { Some(r) } else { None }
-        }
-        (None, Some(l)) => {
-            if !l.is_finite() || l < 0.0 {
-                return Err(ValidationError::InvalidFilament);
-            }
-            if l > 0.0 { Some(l) } else { None }
-        }
+    let right_weight = nonneg_finite(detail.estimated_right_weight)?;
+    let left_weight = nonneg_finite(detail.estimated_left_weight)?;
+    let filament_used_g = match (right_weight, left_weight) {
+        (Some(r), Some(l)) => (r > 0.0 || l > 0.0).then_some(r + l),
+        (Some(v), None) | (None, Some(v)) => (v > 0.0).then_some(v),
         (None, None) => None,
     };
 
@@ -675,12 +637,15 @@ pub(crate) fn parse_detail_to_observation(
     Ok(observation)
 }
 
+pub(super) fn is_hex_color(value: &str) -> bool {
+    value.len() == 7
+        && value.starts_with('#')
+        && value.as_bytes()[1..].iter().all(u8::is_ascii_hexdigit)
+}
+
 fn normalize_material_color(value: &str) -> Option<String> {
     let value = value.trim();
-    (value.len() == 7
-        && value.starts_with('#')
-        && value[1..].bytes().all(|byte| byte.is_ascii_hexdigit()))
-    .then(|| value.to_ascii_uppercase())
+    is_hex_color(value).then(|| value.to_ascii_uppercase())
 }
 
 fn material_station_support(state: &PrinterState) -> Support {
