@@ -13,7 +13,8 @@ use crate::config::Protocol;
 use crate::edge::{EdgeAction, EdgeCommand};
 use crate::shared::printer::PrintStatus;
 use crate::shared::workspace::{
-    PrintControlContext, PrinterAction, PrinterActionKind, ResourceId, StartPrintOptions, Support,
+    PrintControlContext, PrintOptionKind, PrinterAction, PrinterActionKind, ResourceId,
+    StartPrintOptions, Support,
 };
 use crate::state::LocalPrinterId;
 
@@ -28,6 +29,25 @@ use super::format::format_bytes;
 pub(super) enum PrintControl {
     Pause,
     Cancel,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(in crate::gpui_app) struct PendingPrint {
+    pub(in crate::gpui_app) printer_id: LocalPrinterId,
+    pub(in crate::gpui_app) session_generation: u64,
+    pub(in crate::gpui_app) connection_epoch: u64,
+    pub(in crate::gpui_app) file_id: ResourceId,
+    pub(in crate::gpui_app) file_name: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(in crate::gpui_app) struct PendingUpload {
+    pub(in crate::gpui_app) printer_id: LocalPrinterId,
+    pub(in crate::gpui_app) session_generation: u64,
+    pub(in crate::gpui_app) connection_epoch: u64,
+    pub(in crate::gpui_app) source: std::path::PathBuf,
+    pub(in crate::gpui_app) destination: String,
+    pub(in crate::gpui_app) bytes: u64,
 }
 
 pub(super) struct PendingPrintControl {
@@ -204,6 +224,46 @@ impl MakerCalcGpuiApp {
         cx.notify();
     }
 
+    fn confirm_printer_ready(
+        &mut self,
+        printer_id: LocalPrinterId,
+        session_generation: u64,
+        connection_epoch: u64,
+        title_key: &str,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let error = match self.printers.get(&printer_id) {
+            None => Some((
+                ToastKind::Error,
+                t!("printers.errors.not_found").into_owned(),
+                t!("printers.errors.unavailable").into_owned(),
+            )),
+            Some(printer)
+                if printer.session_generation != session_generation
+                    || printer.state.connection_epoch != connection_epoch
+                    || printer.state.connection != crate::state::LanConnection::Connected =>
+            {
+                Some((
+                    ToastKind::Warning,
+                    t!(title_key).into_owned(),
+                    t!("printers.actions.state_changed").into_owned(),
+                ))
+            }
+            Some(printer) if printer.operation_state.is_pending() => Some((
+                ToastKind::Warning,
+                t!(title_key).into_owned(),
+                t!("printers.actions.busy_control").into_owned(),
+            )),
+            Some(_) => None,
+        };
+        if let Some((kind, title, detail)) = error {
+            self.push_toast(kind, title, Some(detail), cx);
+            false
+        } else {
+            true
+        }
+    }
+
     pub(super) fn request_start_print(
         &mut self,
         printer_id: LocalPrinterId,
@@ -211,7 +271,17 @@ impl MakerCalcGpuiApp {
         file_name: String,
         cx: &mut Context<Self>,
     ) {
-        self.pending_print = Some((printer_id, file_id, file_name));
+        let (session_generation, connection_epoch) = self
+            .printers
+            .get(&printer_id)
+            .map_or((0, 0), |p| (p.session_generation, p.state.connection_epoch));
+        self.pending_print = Some(PendingPrint {
+            printer_id,
+            session_generation,
+            connection_epoch,
+            file_id,
+            file_name,
+        });
         self.print_bed_leveling = true;
         self.print_material_station = false;
         self.print_first_layer_inspection = false;
@@ -262,26 +332,32 @@ impl MakerCalcGpuiApp {
         if !self.print_safety_confirmed || self.print_countdown.unwrap_or(0) > 0 {
             return;
         }
-        let Some((printer_id, file_id, file_name)) = self.pending_print.take() else {
+        let Some(pending) = self.pending_print.take() else {
             return;
         };
-        if let Some(printer) = self.printers.get(&printer_id) {
+        if self.confirm_printer_ready(
+            pending.printer_id,
+            pending.session_generation,
+            pending.connection_epoch,
+            "printers.confirmations.start.error",
+            cx,
+        ) && let Some(printer) = self.printers.get(&pending.printer_id)
+        {
             let supports_ifs =
                 printer.detail_state.capabilities.material_station == Support::Available;
+            let has_option = |kind| printer.detail_state.machine.print_options.contains(&kind);
             let send_result = printer.actions.try_send(PrinterAction::StartPrint {
-                file_id,
+                file_id: pending.file_id,
                 options: StartPrintOptions {
                     bed_leveling: self.print_bed_leveling
-                        && printer
-                            .detail_state
-                            .machine
-                            .print_options
-                            .contains(&crate::shared::workspace::PrintOptionKind::BedLeveling),
+                        && has_option(PrintOptionKind::BedLeveling),
                     material_station: supports_ifs && self.print_material_station,
                     material_assignments: Vec::new(),
-                    first_layer_inspection: self.print_first_layer_inspection,
-                    flow_calibration: self.print_flow_calibration,
-                    timelapse: self.print_timelapse,
+                    first_layer_inspection: self.print_first_layer_inspection
+                        && has_option(PrintOptionKind::FirstLayerInspection),
+                    flow_calibration: self.print_flow_calibration
+                        && has_option(PrintOptionKind::FlowCalibration),
+                    timelapse: self.print_timelapse && has_option(PrintOptionKind::Timelapse),
                 },
             });
             match send_result {
@@ -289,7 +365,7 @@ impl MakerCalcGpuiApp {
                     self.push_toast(
                         ToastKind::Info,
                         t!("printers.confirmations.start.sent").into_owned(),
-                        Some(file_name),
+                        Some(pending.file_name),
                         cx,
                     );
                 }
@@ -399,20 +475,27 @@ impl MakerCalcGpuiApp {
     }
 
     pub(super) fn confirm_upload(&mut self, cx: &mut Context<Self>) {
-        let Some((printer_id, source, destination, _)) = self.pending_upload.take() else {
+        let Some(pending) = self.pending_upload.take() else {
             return;
         };
-        if let Some(printer) = self.printers.get(&printer_id) {
+        if self.confirm_printer_ready(
+            pending.printer_id,
+            pending.session_generation,
+            pending.connection_epoch,
+            "printers.confirmations.upload.error",
+            cx,
+        ) && let Some(printer) = self.printers.get(&pending.printer_id)
+        {
             let send_result = printer.actions.try_send(PrinterAction::UploadGcode {
-                source,
-                destination: destination.clone(),
+                source: pending.source,
+                destination: pending.destination.clone(),
             });
             match send_result {
                 Ok(()) => {
                     self.push_toast(
                         ToastKind::Info,
                         t!("printers.confirmations.upload.sending").into_owned(),
-                        Some(destination),
+                        Some(pending.destination),
                         cx,
                     );
                 }
@@ -520,7 +603,7 @@ impl MakerCalcGpuiApp {
         let incoming = self
             .pending_upload
             .as_ref()
-            .map(|(_, _, name, bytes)| (name.clone(), *bytes));
+            .map(|pending| (pending.destination.clone(), pending.bytes));
         let presence = view_presence("upload", incoming, window, cx)?;
         let focus = window
             .use_keyed_state("upload-dialog-focus", cx, |_, cx| cx.focus_handle())
@@ -582,8 +665,8 @@ impl MakerCalcGpuiApp {
             .clone();
         let cancel_focus =
             initial_cancel_focus("start-print", &focus, presence.closing, window, cx);
-        let (printer_id, _, file_name) = presence.value;
-        let printer = self.printers.get(&printer_id);
+        let pending = presence.value;
+        let printer = self.printers.get(&pending.printer_id);
         let print_options = printer
             .map(|p| p.detail_state.machine.print_options.as_slice())
             .unwrap_or_default();
@@ -596,7 +679,11 @@ impl MakerCalcGpuiApp {
         );
         let printer_label =
             t!("printers.confirmations.start.printer", name = printer_name).into_owned();
-        let file_label = t!("printers.confirmations.start.file", name = file_name).into_owned();
+        let file_label = t!(
+            "printers.confirmations.start.file",
+            name = pending.file_name
+        )
+        .into_owned();
         let countdown = self.print_countdown.unwrap_or(0);
         let is_counting = self.print_safety_confirmed && countdown > 0;
         let is_ready = self.print_safety_confirmed && countdown == 0;

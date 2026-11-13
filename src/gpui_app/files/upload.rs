@@ -135,7 +135,14 @@ impl MakerCalcGpuiApp {
                 } else {
                     match result {
                         Ok((source, destination, bytes)) => {
-                            app.pending_upload = Some((target.printer, source, destination, bytes));
+                            app.pending_upload = Some(super::super::confirmations::PendingUpload {
+                                printer_id: target.printer,
+                                session_generation: target.session,
+                                connection_epoch: target.epoch,
+                                source,
+                                destination,
+                                bytes,
+                            });
                         }
                         Err(error) => {
                             let key = match error {

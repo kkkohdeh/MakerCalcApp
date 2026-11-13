@@ -1,5 +1,4 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use gpui_kit::base::TestSupportExt as _;
@@ -177,7 +176,7 @@ pub(crate) struct MakerCalcGpuiApp {
     pub(super) printer_delete_focus: FocusHandle,
     pub(super) mutation_pending: bool,
     pub(super) mutation_error: Option<String>,
-    pub(super) pending_print: Option<(LocalPrinterId, ResourceId, String)>,
+    pub(in crate::gpui_app) pending_print: Option<confirmations::PendingPrint>,
     pending_print_control: Option<confirmations::PendingPrintControl>,
     pub(super) print_bed_leveling: bool,
     pub(super) print_material_station: bool,
@@ -188,7 +187,7 @@ pub(crate) struct MakerCalcGpuiApp {
     pub(super) print_countdown: Option<u8>,
     pub(super) print_countdown_task: Option<Task<()>>,
     pub(super) pending_delete: Option<LocalPrinterId>,
-    pub(super) pending_upload: Option<(LocalPrinterId, PathBuf, String, u64)>,
+    pub(in crate::gpui_app) pending_upload: Option<confirmations::PendingUpload>,
     pub(super) file_picker_open: bool,
     pub(super) diagnostics: VecDeque<String>,
     pub(super) logs_search: Entity<InputState>,
@@ -220,8 +219,10 @@ impl Render for MakerCalcGpuiApp {
         if !self.visual_active {
             return div().size_full().into_any_element();
         }
-        let content = if let Some(id) = self.selected.filter(|id| self.printers.contains_key(id)) {
-            let printer = self.printers.get(&id).expect("impresora existente");
+        let content = if let Some((id, printer)) = self
+            .selected
+            .and_then(|id| self.printers.get(&id).map(|printer| (id, printer)))
+        {
             Self::render_detail(
                 id,
                 printer,
