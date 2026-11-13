@@ -756,7 +756,18 @@
     "flashforge": {
       "not_idle_confirm": "La impresora no está lista (debe estar en espera; retira la pieza previa y confirma en su pantalla)",
       "light_unsupported": "FlashForge no expone esa luz por su API local",
-      "light_state_unknown": "FlashForge no informó el estado actual de la luz"
+      "light_state_unknown": "FlashForge no informó el estado actual de la luz",
+      "confirmed_error": "Fallo confirmado de impresora FlashForge",
+      "station_disabled": "Hay asignaciones de material pero la estación está desactivada",
+      "assign_all_materials": "Asigna todos los materiales del archivo antes de imprimir",
+      "invalid_material_channel": "FlashForge sólo admite materiales lógicos entre 0 y 3",
+      "material_assignment_stale": "La asignación ya no corresponde a un material del archivo",
+      "supply_unavailable": "El suministro seleccionado ya no está disponible",
+      "invalid_supply_slot": "FlashForge sólo admite suministros físicos entre 1 y 4",
+      "supply_empty": "El suministro %{id} está vacío",
+      "missing_file_material": "FlashForge no informó el material lógico del archivo",
+      "invalid_file_material_color": "FlashForge no informó un color válido para el material lógico",
+      "invalid_supply_color": "FlashForge no informó un color válido para el suministro"
     }
   }
 }

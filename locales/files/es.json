@@ -116,7 +116,9 @@
     "flashforge": {
       "not_found": "Archivo no encontrado en la impresora",
       "not_in_catalog": "El archivo seleccionado no se encuentra en el catálogo local",
-      "list_error": "No se pudo obtener la lista de archivos de la impresora"
+      "list_error": "No se pudo obtener la lista de archivos de la impresora",
+      "open_local": "No se pudo abrir el archivo local: %{error}",
+      "prepare_multipart": "Error al preparar multipart: %{error}"
     }
   }
 }

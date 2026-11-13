@@ -457,7 +457,7 @@ pub(crate) fn parse_detail_to_observation(
     } else if status == PrintStatus::Error {
         Some(vec![PrinterAlert::new(
             "print_error",
-            "Fallo confirmado de impresora FlashForge".to_owned(),
+            crate::i18n::t!("printers.flashforge.confirmed_error").into_owned(),
         )])
     } else if matches!(
         status,
@@ -1102,7 +1102,7 @@ pub(crate) fn build_print_gcode_payload(
     supplies: &[FilamentSupplyTelemetry],
 ) -> Result<serde_json::Value, String> {
     if !options.material_station && !options.material_assignments.is_empty() {
-        return Err("Hay asignaciones de material pero la estación está desactivada".to_owned());
+        return Err(crate::i18n::t!("printers.flashforge.station_disabled").into_owned());
     }
 
     let tools = detail_entry
@@ -1112,48 +1112,58 @@ pub(crate) fn build_print_gcode_payload(
         && !tools.is_empty()
         && options.material_assignments.len() != tools.len()
     {
-        return Err("Asigna todos los materiales del archivo antes de imprimir".to_owned());
+        return Err(crate::i18n::t!("printers.flashforge.assign_all_materials").into_owned());
     }
 
     let mut mappings = Vec::with_capacity(options.material_assignments.len());
     for assignment in &options.material_assignments {
         if assignment.channel_id > 3 {
-            return Err("FlashForge sólo admite materiales lógicos entre 0 y 3".to_owned());
+            return Err(
+                crate::i18n::t!("printers.flashforge.invalid_material_channel").into_owned(),
+            );
         }
         let tool = tools
             .iter()
             .find(|tool| tool.tool_id == Some(assignment.channel_id))
             .ok_or_else(|| {
-                "La asignación ya no corresponde a un material del archivo".to_owned()
+                crate::i18n::t!("printers.flashforge.material_assignment_stale").into_owned()
             })?;
         let supply = supplies
             .iter()
             .find(|supply| supply.id == assignment.supply_id)
-            .ok_or_else(|| "El suministro seleccionado ya no está disponible".to_owned())?;
+            .ok_or_else(|| {
+                crate::i18n::t!("printers.flashforge.supply_unavailable").into_owned()
+            })?;
         if !(1..=4).contains(&supply.id.0) {
-            return Err("FlashForge sólo admite suministros físicos entre 1 y 4".to_owned());
+            return Err(crate::i18n::t!("printers.flashforge.invalid_supply_slot").into_owned());
         }
         if supply.filament_present == Some(false) {
-            return Err(format!("El suministro {} está vacío", supply.id));
+            return Err(
+                crate::i18n::t!("printers.flashforge.supply_empty", id = supply.id).into_owned(),
+            );
         }
         let material_name = tool
             .material_name
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty())
-            .ok_or_else(|| "FlashForge no informó el material lógico del archivo".to_owned())?;
+            .ok_or_else(|| {
+                crate::i18n::t!("printers.flashforge.missing_file_material").into_owned()
+            })?;
         let tool_color = tool
             .material_color
             .as_deref()
             .and_then(normalize_material_color)
             .ok_or_else(|| {
-                "FlashForge no informó un color válido para el material lógico".to_owned()
+                crate::i18n::t!("printers.flashforge.invalid_file_material_color").into_owned()
             })?;
         let slot_color = supply
             .color
             .as_deref()
             .and_then(normalize_material_color)
-            .ok_or_else(|| "FlashForge no informó un color válido para el suministro".to_owned())?;
+            .ok_or_else(|| {
+                crate::i18n::t!("printers.flashforge.invalid_supply_color").into_owned()
+            })?;
         mappings.push(json!({
             "toolId": assignment.channel_id,
             "slotId": supply.id.0,
@@ -2072,7 +2082,7 @@ async fn upload_flashforge_gcode(
         Err(e) => {
             let _ = operation_io.state.send_replace(OperationState::Rejected {
                 action: PrinterActionKind::UploadGcode,
-                message: format!("No se pudo abrir el archivo local: {e}"),
+                message: crate::i18n::t!("files.flashforge.open_local", error = e).into_owned(),
             });
             return;
         }
@@ -2088,7 +2098,8 @@ async fn upload_flashforge_gcode(
         Err(e) => {
             let _ = operation_io.state.send_replace(OperationState::Rejected {
                 action: PrinterActionKind::UploadGcode,
-                message: format!("Error al preparar multipart: {e}"),
+                message: crate::i18n::t!("files.flashforge.prepare_multipart", error = e)
+                    .into_owned(),
             });
             return;
         }
