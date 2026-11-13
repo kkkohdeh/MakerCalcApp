@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tokio::sync::watch;
 
@@ -6,6 +6,13 @@ pub(crate) use crate::shared::printer::CloudDeviceMetadata as Device;
 use crate::shared::thumbnail::ThumbnailHandle;
 use crate::shared::workspace::{DetailHandle, OperationHandle};
 use crate::state::{LocalPrinterId, PrinterState};
+
+pub(super) fn retry_deadline(now: Instant, delay: Duration) -> Instant {
+    now.checked_add(delay).unwrap_or_else(|| {
+        now.checked_add(Duration::from_secs(365 * 24 * 60 * 60))
+            .unwrap_or(now)
+    })
+}
 
 mod history;
 mod planner;
@@ -51,7 +58,6 @@ pub(crate) struct CloudPrinterReceiver {
 #[derive(Clone, Default)]
 pub(crate) struct CloudRegistry {
     pub(crate) history: Option<crate::history::HistoryHandle>,
-    pub(crate) revision: u64,
     pub(crate) printers: Vec<CloudPrinterReceiver>,
 }
 

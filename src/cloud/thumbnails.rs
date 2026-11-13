@@ -317,9 +317,8 @@ impl ThumbnailSession {
             return true;
         };
         if matches!(code, "rate_limited" | "unavailable") {
-            entry.retry_at = now
-                .checked_add(Duration::from_millis(retry_after_ms.unwrap_or(5000)))
-                .unwrap_or(now + Duration::from_secs(365 * 24 * 60 * 60));
+            entry.retry_at =
+                super::retry_deadline(now, Duration::from_millis(retry_after_ms.unwrap_or(5_000)));
         } else {
             entry.state = ThumbnailState::Skipped;
         }

@@ -811,7 +811,6 @@ impl EdgeActor {
         });
         let _ = self.cloud_registry_sender.send(CloudRegistry {
             history: Some(self.history.handle()),
-            revision,
             printers: cloud_printers,
         });
     }

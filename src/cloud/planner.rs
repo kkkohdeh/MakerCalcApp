@@ -167,6 +167,16 @@ impl Planner {
         Ok(())
     }
 
+    fn encode_observed(&mut self, printer: &ObservedPrinter, now: Instant) -> Option<String> {
+        let mut wire = WirePrinter::from_state(printer, now);
+        wire.age_ms = None;
+        #[cfg(test)]
+        {
+            self.work.observed_serializations += 1;
+        }
+        serde_json::to_string(&wire).ok()
+    }
+
     pub(super) fn observe_one(&mut self, printer: ObservedPrinter, now: Instant) {
         let id = printer.id;
         match self.records.remove(&id) {
@@ -182,13 +192,7 @@ impl Planner {
                     || record.observed.name != printer.name
                 {
                     record.last_observed_revision = printer.state.revision;
-                    let mut wire = WirePrinter::from_state(&printer, now);
-                    wire.age_ms = None;
-                    #[cfg(test)]
-                    {
-                        self.work.observed_serializations += 1;
-                    }
-                    let encoded = serde_json::to_string(&wire).ok();
+                    let encoded = self.encode_observed(&printer, now);
                     if !same_wire(record.last_observed_wire.as_deref(), encoded.as_deref()) {
                         record.last_observed_wire = encoded;
                         record.delivery_revision = record.delivery_revision.saturating_add(1);
@@ -200,17 +204,12 @@ impl Planner {
                 self.records.insert(id, record);
             }
             _ => {
-                let mut wire = WirePrinter::from_state(&printer, now);
-                wire.age_ms = None;
-                #[cfg(test)]
-                {
-                    self.work.observed_serializations += 1;
-                }
+                let encoded = self.encode_observed(&printer, now);
                 self.records.insert(
                     id,
                     DeliveryRecord {
                         last_observed_revision: printer.state.revision,
-                        last_observed_wire: serde_json::to_string(&wire).ok(),
+                        last_observed_wire: encoded,
                         delivery_revision: 1,
                         observed: printer,
                         dirty_since: Some(now),
@@ -254,16 +253,22 @@ impl Planner {
         })
     }
 
+    fn interval_elapsed(&self, now: Instant) -> bool {
+        self.last_batch_started_at.is_none_or(|last| {
+            now.saturating_duration_since(last)
+                >= self
+                    .limits
+                    .min_interval
+                    .saturating_sub(Duration::from_millis(100))
+        })
+    }
+
+    pub(super) fn has_due_batch(&self, now: Instant) -> bool {
+        self.interval_elapsed(now) && self.records.values().any(|record| is_due(record, now))
+    }
+
     pub(super) fn select(&mut self, now: Instant) -> Result<Option<PendingBatch>, PlannerError> {
-        if self.in_flight.is_some()
-            || self.last_batch_started_at.is_some_and(|last| {
-                now.saturating_duration_since(last)
-                    < self
-                        .limits
-                        .min_interval
-                        .saturating_sub(Duration::from_millis(100))
-            })
-        {
+        if self.in_flight.is_some() || !self.interval_elapsed(now) {
             return Ok(None);
         }
         let eligible = self.eligible_ids(now);
@@ -445,20 +450,16 @@ impl Planner {
     }
 
     fn eligible_ids(&self, now: Instant) -> Vec<LocalPrinterId> {
-        let ids = self
+        let mut ids = self
             .records
             .iter()
             .filter_map(|(id, record)| is_due(record, now).then_some(*id))
             .collect::<Vec<_>>();
-        let Some(after) = self.cursor_after else {
-            return ids;
-        };
-        let split = ids.partition_point(|id| *id <= after);
-        ids[split..]
-            .iter()
-            .chain(ids[..split].iter())
-            .copied()
-            .collect()
+        if let Some(after) = self.cursor_after {
+            let split = ids.partition_point(|id| *id <= after);
+            ids.rotate_left(split);
+        }
+        ids
     }
 }
 

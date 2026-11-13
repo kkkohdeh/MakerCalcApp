@@ -17,7 +17,7 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async_with_conf
 use url::Url;
 
 use super::history::HistorySession;
-use super::planner::{ObservedPrinter, Planner, is_due};
+use super::planner::{ObservedPrinter, Planner};
 use super::thumbnails::ThumbnailSession;
 use super::wire::{CommandAction, ServerMessage, decode_server_message, valid_remote_id};
 use super::{
@@ -146,10 +146,11 @@ pub(super) async fn run_cloud_at_endpoint(
         .await;
         let session_lifetime = session_started.elapsed();
         planner.disconnect();
-        match result {
+        let (message, retry_after) = match result {
             SessionResult::Stopped => return,
             SessionResult::ConfigurationChanged => {
                 retry_attempt = 0;
+                continue;
             }
             SessionResult::NeedsAttention(message) => {
                 publish_view(
@@ -166,6 +167,7 @@ pub(super) async fn run_cloud_at_endpoint(
                     },
                     changed = shutdown.changed() => if changed.is_err() || *shutdown.borrow() { return; },
                 }
+                continue;
             }
             SessionResult::Incompatible(message) => {
                 publish_view(
@@ -185,37 +187,33 @@ pub(super) async fn run_cloud_at_endpoint(
                     },
                     changed = shutdown.changed() => if changed.is_err() || *shutdown.borrow() { return; },
                 }
+                continue;
             }
-            result => {
-                let (message, retry_after) = match result {
-                    SessionResult::Temporary(message) => (message, None),
-                    SessionResult::RetryAfter(message, retry_after) => (message, Some(retry_after)),
-                    _ => unreachable!(),
-                };
-                if session_lifetime >= Duration::from_secs(60) {
-                    retry_attempt = 0;
-                }
-                let mut wait = retry_delay(retry_attempt);
-                retry_attempt = retry_attempt.saturating_add(1);
-                if let Some(retry_after) = retry_after {
-                    wait = wait.max(retry_after);
-                }
-                publish_view(
-                    &view_sender,
-                    CloudStatus::Unavailable(message),
-                    planner.pending_count(Instant::now()),
-                    None,
-                    None,
-                );
-                tokio::select! {
-                    _ = tokio::time::sleep(wait) => {}
-                    changed = configuration.changed() => {
-                        if changed.is_err() { return; }
-                        retry_attempt = 0;
-                    },
-                    changed = shutdown.changed() => if changed.is_err() || *shutdown.borrow() { return; },
-                }
-            }
+            SessionResult::Temporary(message) => (message, None),
+            SessionResult::RetryAfter(message, retry_after) => (message, Some(retry_after)),
+        };
+        if session_lifetime >= Duration::from_secs(60) {
+            retry_attempt = 0;
+        }
+        let mut wait = retry_delay(retry_attempt);
+        retry_attempt = retry_attempt.saturating_add(1);
+        if let Some(retry_after) = retry_after {
+            wait = wait.max(retry_after);
+        }
+        publish_view(
+            &view_sender,
+            CloudStatus::Unavailable(message),
+            planner.pending_count(Instant::now()),
+            None,
+            None,
+        );
+        tokio::select! {
+            _ = tokio::time::sleep(wait) => {}
+            changed = configuration.changed() => {
+                if changed.is_err() { return; }
+                retry_attempt = 0;
+            },
+            changed = shutdown.changed() => if changed.is_err() || *shutdown.borrow() { return; },
         }
     }
 }
@@ -293,16 +291,6 @@ pub(super) async fn run_session(
                 thumbnail_max_bytes,
             )
         }
-        Ok(ServerMessage::Ready { v, .. }) if v != SCHEMA_VERSION => {
-            return SessionResult::Incompatible(
-                t!("settings.cloud.errors.update_required").into_owned(),
-            );
-        }
-        Ok(ServerMessage::Ready { .. }) => {
-            return SessionResult::Incompatible(
-                t!("settings.cloud.errors.update_required").into_owned(),
-            );
-        }
         Ok(_) => {
             return SessionResult::Incompatible(
                 t!("settings.cloud.errors.update_required").into_owned(),
@@ -329,15 +317,7 @@ pub(super) async fn run_session(
         if planner.in_flight.is_none() && history.flight.is_none() && thumbnails.flight.is_none() {
             let now = Instant::now();
             thumbnails.observe(&registry.borrow(), &history.announced, now);
-            let live_due = planner.records.values().any(|record| is_due(record, now))
-                && planner.last_batch_started_at.is_none_or(|last| {
-                    now.saturating_duration_since(last)
-                        >= planner
-                            .limits
-                            .min_interval
-                            .saturating_sub(Duration::from_millis(100))
-                });
-            if !live_due
+            if !planner.has_due_batch(now)
                 && let Some(payload) =
                     thumbnails.prepare(planner.next_seq, planner.limits.max_message_bytes, now)
             {
@@ -369,12 +349,23 @@ pub(super) async fn run_session(
                     || thumbnails.flight.as_ref().is_some_and(|flight| now.saturating_duration_since(flight.sent_at) >= ACK_TIMEOUT) {
                     return SessionResult::Temporary(t!("settings.cloud.errors.connection").into_owned());
                 }
-                if history.flight.is_none() && thumbnails.flight.is_none() && let Ok(Some(batch)) = planner.select(now) {
-                    let mut batch = batch;
-                    if socket.send(Message::Text(std::mem::take(&mut batch.payload).into())).await.is_err() {
-                        return SessionResult::Temporary(t!("settings.cloud.errors.connection").into_owned());
+                if history.flight.is_none() && thumbnails.flight.is_none() {
+                    match planner.select(now) {
+                        Ok(Some(mut batch)) => {
+                            if socket
+                                .send(Message::Text(std::mem::take(&mut batch.payload).into()))
+                                .await
+                                .is_err()
+                            {
+                                return SessionResult::Temporary(
+                                    t!("settings.cloud.errors.connection").into_owned(),
+                                );
+                            }
+                            planner.mark_sent(batch, now);
+                        }
+                        Ok(None) => {}
+                        Err(error) => return SessionResult::Incompatible(error.to_string()),
                     }
-                    planner.mark_sent(batch, now);
                 }
                 if planner.in_flight.is_none() && history.flight.is_none() && thumbnails.flight.is_none() && now >= history.retry_at
                     && history.last_sent.is_none_or(|last| now.saturating_duration_since(last) >= history.interval)
@@ -388,16 +379,29 @@ pub(super) async fn run_session(
                         }
                         if !history.pending.is_empty() {
                             let seq = planner.next_seq;
-                            let count = history.fitting_count(seq, planner.limits.max_message_bytes).unwrap_or(0);
-                            let payload = history.payload(seq, count).ok();
-                            if count == 0 {
-                                history.pending.remove(0);
-                                view_sender.send_modify(|view| view.last_rejected = Some(t!("settings.cloud.errors.history_row_size").into_owned()));
-                            } else if let Some(payload) = payload {
-                                let Some(next_seq) = planner.next_seq.checked_add(1) else { return SessionResult::Incompatible("Secuencia agotada".to_owned()); };
-                                planner.next_seq = next_seq;
-                                if socket.send(Message::Text(payload.into())).await.is_err() { return SessionResult::Temporary(t!("settings.cloud.errors.connection").into_owned()); }
-                                history.mark_sent(seq, count, now);
+                            match history.fitting_count(seq, planner.limits.max_message_bytes) {
+                                Ok(0) => {
+                                    history.pending.remove(0);
+                                    view_sender.send_modify(|view| view.last_rejected = Some(t!("settings.cloud.errors.history_row_size").into_owned()));
+                                }
+                                Ok(count) => match history.payload(seq, count) {
+                                    Ok(payload) => {
+                                        let Some(next_seq) = planner.next_seq.checked_add(1) else {
+                                            return SessionResult::Incompatible("Secuencia agotada".to_owned());
+                                        };
+                                        planner.next_seq = next_seq;
+                                        if socket.send(Message::Text(payload.into())).await.is_err() {
+                                            return SessionResult::Temporary(t!("settings.cloud.errors.connection").into_owned());
+                                        }
+                                        history.mark_sent(seq, count, now);
+                                    }
+                                    Err(_) => {
+                                        view_sender.send_modify(|view| view.last_rejected = Some(t!("settings.cloud.errors.history_batch").into_owned()));
+                                    }
+                                },
+                                Err(_) => {
+                                    view_sender.send_modify(|view| view.last_rejected = Some(t!("settings.cloud.errors.history_batch").into_owned()));
+                                }
                             }
                         }
                     }
@@ -466,9 +470,10 @@ pub(super) async fn run_session(
                         if history.flight.is_some_and(|(pending, _)| pending == seq) {
                             match code.as_str() {
                                 "rate_limited" | "unavailable" => {
-                                    let now = Instant::now();
-                                    let retry_at = now.checked_add(Duration::from_millis(retry_after_ms.unwrap_or(5_000)))
-                                        .unwrap_or(now + Duration::from_secs(365 * 24 * 60 * 60));
+                                    let retry_at = super::retry_deadline(
+                                        Instant::now(),
+                                        Duration::from_millis(retry_after_ms.unwrap_or(5_000)),
+                                    );
                                     history.retry_after_rejection(retry_at);
                                 }
                                 _ => {
@@ -617,7 +622,6 @@ pub(super) fn sync_registry_with_thumbnails(
     thumbnails: Option<&ThumbnailSession>,
 ) {
     let registry = registry.borrow();
-    let _registry_revision = registry.revision;
     let mut ids = std::collections::BTreeSet::new();
     for printer in registry.printers.iter().take(250) {
         ids.insert(printer.id);
