@@ -1264,6 +1264,65 @@ fn fresh_connected_telemetry(state: &PrinterState) -> bool {
             .is_some_and(|age| age <= 15_000)
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn refresh_file_list(
+    client: &reqwest::Client,
+    host: &str,
+    gcode_list_url: &str,
+    gcode_list_body: &str,
+    http_only: bool,
+    catalog: &mut BTreeMap<ResourceId, (String, Option<FlashforgeGcodeDetailEntry>)>,
+    current_state: &mut DetailState,
+    uploaded_destination: Option<&str>,
+) {
+    let mut tcp_names = if http_only {
+        Vec::new()
+    } else {
+        fetch_tcp_gcode_list(host).await.unwrap_or_default()
+    };
+    if let Some(destination) = uploaded_destination
+        && !tcp_names.iter().any(|name| name == destination)
+    {
+        tcp_names.insert(0, destination.to_owned());
+    }
+    let fetch_res = match client
+        .post(gcode_list_url)
+        .header("Content-Type", "application/json")
+        .body(gcode_list_body.to_owned())
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => {
+            bounded_flashforge_body(resp, MAX_FILE_LIST_BYTES)
+                .await
+                .ok()
+                .and_then(|body| {
+                    std::str::from_utf8(&body)
+                        .ok()
+                        .and_then(|text| parse_gcode_list_response(text).ok())
+                })
+        }
+        _ => None,
+    };
+    if !tcp_names.is_empty() || fetch_res.is_some() {
+        let (files, new_catalog) =
+            map_gcode_sources_to_files(&tcp_names, fetch_res.as_ref(), catalog);
+        replace_file_catalog(catalog, new_catalog, current_state);
+        current_state.files = ReadResult {
+            status: ReadStatus::Ready,
+            value: Some(files),
+            error: None,
+        };
+    } else {
+        current_state.files = ReadResult {
+            status: ReadStatus::Error,
+            value: current_state.files.value.clone(),
+            error: Some(crate::i18n::t!("files.flashforge.list_error").into_owned()),
+        };
+    }
+    current_state.revision = current_state.revision.saturating_add(1);
+}
+
 /// Runs the FlashForge detail request handler task.
 ///
 /// Dispatches `DetailIo` requests (such as `ListFiles` and `InspectFile`)
@@ -1440,44 +1499,17 @@ async fn run_detail_handler(
                         current_state.revision = current_state.revision.saturating_add(1);
                         let _ = detail_io.state.send_replace(Arc::new(current_state.clone()));
 
-                        let tcp_names = if machine.http_only() { Vec::new() } else {
-                            fetch_tcp_gcode_list(&host).await.unwrap_or_default()
-                        };
-
-                        let req = client
-                            .post(&gcode_list_url)
-                            .header("Content-Type", "application/json")
-                            .body(gcode_list_body.clone());
-
-                        let fetch_res = match req.send().await {
-                            Ok(resp) if resp.status().is_success() => {
-                                bounded_flashforge_body(resp, MAX_FILE_LIST_BYTES)
-                                    .await.ok()
-                                    .and_then(|body| std::str::from_utf8(&body).ok()
-                                        .and_then(|text| parse_gcode_list_response(text).ok()))
-                            }
-                            _ => None,
-                        };
-
-                        if !tcp_names.is_empty() || fetch_res.is_some() {
-                            let (files, new_catalog) =
-                                map_gcode_sources_to_files(&tcp_names, fetch_res.as_ref(), &catalog);
-                            replace_file_catalog(&mut catalog, new_catalog, &mut current_state);
-                            current_state.files = ReadResult {
-                                status: ReadStatus::Ready,
-                                value: Some(files),
-                                error: None,
-                            };
-                        } else {
-                            current_state.files = ReadResult {
-                                status: ReadStatus::Error,
-                                value: current_state.files.value.clone(),
-                                error: Some(
-                                    "No se pudo obtener la lista de archivos de la impresora".to_owned(),
-                                ),
-                            };
-                        }
-                        current_state.revision = current_state.revision.saturating_add(1);
+                        refresh_file_list(
+                            &client,
+                            &host,
+                            &gcode_list_url,
+                            &gcode_list_body,
+                            machine.http_only(),
+                            &mut catalog,
+                            &mut current_state,
+                            None,
+                        )
+                        .await;
                         let _ = detail_io.state.send_replace(Arc::new(current_state.clone()));
                     }
 
@@ -1893,35 +1925,17 @@ async fn run_detail_handler(
                             &*operation_io.state.borrow(),
                             OperationState::Accepted(PrinterActionKind::UploadGcode)
                         ) {
-                            let mut tcp_names =
-                                fetch_tcp_gcode_list(&host).await.unwrap_or_default();
-                            if !tcp_names.iter().any(|n| n == &destination) {
-                                tcp_names.insert(0, destination.clone());
-                            }
-
-                            let req = client
-                                .post(&gcode_list_url)
-                                .header("Content-Type", "application/json")
-                                .body(gcode_list_body.clone());
-                            let fetch_res = match req.send().await {
-                                Ok(resp) if resp.status().is_success() => {
-                                    bounded_flashforge_body(resp, MAX_FILE_LIST_BYTES)
-                                        .await.ok()
-                                        .and_then(|body| std::str::from_utf8(&body).ok()
-                                            .and_then(|text| parse_gcode_list_response(text).ok()))
-                                }
-                                _ => None,
-                            };
-
-                            let (files, new_catalog) =
-                                map_gcode_sources_to_files(&tcp_names, fetch_res.as_ref(), &catalog);
-                            replace_file_catalog(&mut catalog, new_catalog, &mut current_state);
-                            current_state.files = ReadResult {
-                                status: ReadStatus::Ready,
-                                value: Some(files),
-                                error: None,
-                            };
-                            current_state.revision = current_state.revision.saturating_add(1);
+                            refresh_file_list(
+                                &client,
+                                &host,
+                                &gcode_list_url,
+                                &gcode_list_body,
+                                machine.http_only(),
+                                &mut catalog,
+                                &mut current_state,
+                                Some(&destination),
+                            )
+                            .await;
                             let _ = detail_io.state.send_replace(Arc::new(current_state.clone()));
                         }
                     }
