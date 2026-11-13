@@ -360,11 +360,17 @@ pub(super) struct MachineControls {
     drying: drying::State,
     editor: Option<Editor>,
     rendered: bool,
-    tasks: BTreeMap<LocalPrinterId, Task<()>>,
+    tasks: BTreeMap<LocalPrinterId, (u64, u64, Task<()>)>,
     motion: motion::State,
 }
 
 impl MachineControls {
+    fn finish(&mut self, id: LocalPrinterId, session: u64, epoch: u64) {
+        if matches!(self.tasks.get(&id), Some((s, e, _)) if *s == session && *e == epoch) {
+            self.tasks.remove(&id);
+        }
+    }
+
     pub(super) fn is_pending(&self, id: LocalPrinterId) -> bool {
         self.tasks.contains_key(&id)
     }
@@ -708,7 +714,7 @@ impl MakerCalcGpuiApp {
         let task = cx.spawn(async move |app, cx| {
             let result = receiver.await.unwrap_or(ControlResult::Unknown);
             let _ = app.update(cx, |app, cx| {
-                app.machine_controls.tasks.remove(&id);
+                app.machine_controls.finish(id, session, epoch);
                 if !app.printers.get(&id).is_some_and(|p| {
                     p.session_generation == session && p.state.connection_epoch == epoch
                 }) {
@@ -741,8 +747,18 @@ impl MakerCalcGpuiApp {
                 cx.notify();
             });
         });
-        self.machine_controls.tasks.insert(id, task);
+        self.machine_controls
+            .tasks
+            .insert(id, (session, epoch, task));
         cx.notify();
+    }
+
+    pub(super) fn sync_machine_controls(&mut self) {
+        self.machine_controls.tasks.retain(|id, (s, e, _)| {
+            self.printers
+                .get(id)
+                .is_some_and(|p| matches_session(p, *s, *e))
+        });
     }
 
     pub(super) fn render_machine_editor(
@@ -784,7 +800,7 @@ impl MakerCalcGpuiApp {
                 });
                 hint.unwrap_or_else(|| editor_message(error))
             })
-            .or(editor.error);
+            .or_else(|| editor.error.clone());
         let speed = editor.choice.control == Control::Speed;
         let clear_plate = editor.choice.control == Control::ClearPlate;
         let fan_hint = match (editor.choice.control, editor.fan_range) {
@@ -954,28 +970,7 @@ impl MakerCalcGpuiApp {
                                 )
                                 .child(
                                     Button::new("machine-editor-submit")
-                                        .label(if speed {
-                                            t!("printers.controls.speed_apply").into_owned()
-                                        } else if editor.choice.control == Control::ZOffset {
-                                            t!("printers.controls.z_offset_apply").into_owned()
-                                        } else if clear_plate {
-                                            t!("printers.controls.clear_plate").into_owned()
-                                        } else if auto_shutdown
-                                            || matches!(
-                                                editor.choice.control,
-                                                Control::Calibration(_)
-                                            )
-                                        {
-                                            editor.choice.label.clone()
-                                        } else if editor.extrusion_limit.is_some() {
-                                            t!("printers.controls.extrude_apply").into_owned()
-                                        } else if editor.fan_range.is_some() {
-                                            t!("printers.controls.fan_apply").into_owned()
-                                        } else if printer_name {
-                                            t!("printers.controls.name_apply").into_owned()
-                                        } else {
-                                            t!("printers.controls.send").into_owned()
-                                        })
+                                        .label(editor_fields::submit_label(&editor))
                                         .disabled(disabled)
                                         .on_click(cx.listener(|app, _, _, cx| {
                                             app.submit_machine_editor(cx)
@@ -989,4 +984,8 @@ impl MakerCalcGpuiApp {
                 .into_any_element(),
         )
     }
+}
+
+fn matches_session(printer: &PrinterEntry, session: u64, epoch: u64) -> bool {
+    printer.session_generation == session && printer.state.connection_epoch == epoch
 }

@@ -1,5 +1,5 @@
 use super::localized_decimal;
-use super::{PrinterEntry, ResourceId, control_device};
+use super::{Control, Editor, PrinterEntry, ResourceId, control_device};
 use crate::i18n::t;
 use gpui_kit::base::StyledExt as _;
 use gpui_kit::component::slider::{Slider, SliderState};
@@ -74,4 +74,21 @@ pub(super) fn speed_field(
                 .child(format!("{max}%")),
         )
         .into_any_element()
+}
+
+pub(super) fn submit_label(editor: &Editor) -> String {
+    match editor.choice.control {
+        Control::Speed => t!("printers.controls.speed_apply").into_owned(),
+        Control::ZOffset => t!("printers.controls.z_offset_apply").into_owned(),
+        Control::ClearPlate => t!("printers.controls.clear_plate").into_owned(),
+        Control::AutoShutdown(_) | Control::Calibration(_) => editor.choice.label.clone(),
+        Control::Extrude(_) if editor.extrusion_limit.is_some() => {
+            t!("printers.controls.extrude_apply").into_owned()
+        }
+        Control::Fan(_) if editor.fan_range.is_some() => {
+            t!("printers.controls.fan_apply").into_owned()
+        }
+        Control::Name => t!("printers.controls.name_apply").into_owned(),
+        _ => t!("printers.controls.send").into_owned(),
+    }
 }

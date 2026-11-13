@@ -188,7 +188,7 @@ impl MakerCalcGpuiApp {
                     crate::diagnostics::log(
                         LogEvent::new(LogLevel::Error, LogArea::Integration, "edge.message")
                             .result("failed")
-                            .detail("Error de integración; detalle disponible en la interfaz"),
+                            .detail("Integration error; details available in UI"),
                     );
                 }
                 if app
@@ -296,6 +296,7 @@ impl MakerCalcGpuiApp {
             .collect();
 
         self.sync_material_controls();
+        self.sync_machine_controls();
         for printer in printers {
             let id = printer.id;
             let mut receiver = printer.receiver;
@@ -307,8 +308,11 @@ impl MakerCalcGpuiApp {
                     let state = receiver.borrow_and_update().clone();
                     if app
                         .update(cx, |app, cx| {
+                            let mut epoch_changed = false;
                             if let Some(printer) = app.printers.get_mut(&id) {
                                 let previous = printer.state.connection;
+                                epoch_changed =
+                                    printer.state.connection_epoch != state.connection_epoch;
                                 printer.state = state;
                                 if previous != printer.state.connection {
                                     log_connection_change(printer, previous);
@@ -316,6 +320,9 @@ impl MakerCalcGpuiApp {
                                 if app.visual_active {
                                     printer.update_latest_temperature_sample();
                                 }
+                            }
+                            if epoch_changed {
+                                app.sync_machine_controls();
                             }
                             app.request_thumbnail(id, cx);
                             app.notify_if_visible(cx);
@@ -617,7 +624,7 @@ pub(crate) fn run(
                     });
                     cx.new(|cx| Root::new(view, window, cx))
                 })
-                .expect("no se pudo abrir la ventana GPUI");
+                .expect("failed to open GPUI window");
             })
             .detach();
         });
