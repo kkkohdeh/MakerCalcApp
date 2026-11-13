@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures_util::StreamExt;
 use reqwest::header::{CONTENT_RANGE, CONTENT_TYPE, RANGE};
@@ -655,6 +656,7 @@ pub(crate) fn file_url(base: &str, root: &str, relative: &str) -> Result<Url, De
     Ok(url)
 }
 
+#[derive(Debug)]
 pub(crate) struct FilePreview {
     pub(crate) content_type: Option<String>,
     pub(crate) total_bytes: Option<u64>,
@@ -703,54 +705,60 @@ pub(crate) async fn fetch_file_preview(
     let end = offset
         .saturating_add(FILE_PREVIEW_BYTES as u64)
         .saturating_sub(1);
-    let response = client
-        .get(url)
-        .header(RANGE, format!("bytes={offset}-{end}"))
-        .send()
+    let (content_type, range_end, total_bytes, bytes) =
+        tokio::time::timeout(Duration::from_secs(4), async {
+            let response = client
+                .get(url)
+                .header(RANGE, format!("bytes={offset}-{end}"))
+                .send()
+                .await
+                .map_err(|error| DetailError::Http(sanitize_http_error(&error.to_string())))?;
+            let status = response.status();
+            if status.is_redirection() {
+                return Err(DetailError::Http(
+                    "Moonraker redirigió el contenido; se bloqueó por seguridad".to_owned(),
+                ));
+            }
+            if offset > 0 && status == reqwest::StatusCode::OK {
+                return Err(DetailError::Http(
+                    "Rango no soportado por esta impresora".to_owned(),
+                ));
+            }
+            if status != reqwest::StatusCode::PARTIAL_CONTENT && status != reqwest::StatusCode::OK {
+                return Err(DetailError::Http(format!(
+                    "Moonraker devolvió HTTP {}",
+                    status.as_u16()
+                )));
+            }
+            let content_type = response
+                .headers()
+                .get(CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .map(ToOwned::to_owned);
+            let range = response
+                .headers()
+                .get(CONTENT_RANGE)
+                .and_then(|value| value.to_str().ok())
+                .map(ToOwned::to_owned);
+            let (range_end, total_bytes) = if status == reqwest::StatusCode::PARTIAL_CONTENT {
+                parse_content_range(range.as_deref(), offset)?
+            } else {
+                (None, response.content_length())
+            };
+            let mut stream = response.bytes_stream();
+            let mut bytes = Vec::with_capacity(FILE_PREVIEW_BYTES);
+            while let Some(chunk) = stream.next().await {
+                let chunk = chunk
+                    .map_err(|error| DetailError::Http(sanitize_http_error(&error.to_string())))?;
+                if bytes.len().saturating_add(chunk.len()) > FILE_PREVIEW_BYTES {
+                    return Err(DetailError::PayloadLimit);
+                }
+                bytes.extend_from_slice(&chunk);
+            }
+            Ok::<_, DetailError>((content_type, range_end, total_bytes, bytes))
+        })
         .await
-        .map_err(|error| DetailError::Http(sanitize_http_error(&error.to_string())))?;
-    let status = response.status();
-    if status.is_redirection() {
-        return Err(DetailError::Http(
-            "Moonraker redirigió el contenido; se bloqueó por seguridad".to_owned(),
-        ));
-    }
-    if offset > 0 && status == reqwest::StatusCode::OK {
-        return Err(DetailError::Http(
-            "Rango no soportado por esta impresora".to_owned(),
-        ));
-    }
-    if status != reqwest::StatusCode::PARTIAL_CONTENT && status != reqwest::StatusCode::OK {
-        return Err(DetailError::Http(format!(
-            "Moonraker devolvió HTTP {}",
-            status.as_u16()
-        )));
-    }
-    let content_type = response
-        .headers()
-        .get(CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .map(ToOwned::to_owned);
-    let range = response
-        .headers()
-        .get(CONTENT_RANGE)
-        .and_then(|value| value.to_str().ok())
-        .map(ToOwned::to_owned);
-    let (range_end, total_bytes) = if status == reqwest::StatusCode::PARTIAL_CONTENT {
-        parse_content_range(range.as_deref(), offset)?
-    } else {
-        (None, response.content_length())
-    };
-    let mut stream = response.bytes_stream();
-    let mut bytes = Vec::with_capacity(FILE_PREVIEW_BYTES);
-    while let Some(chunk) = stream.next().await {
-        let chunk =
-            chunk.map_err(|error| DetailError::Http(sanitize_http_error(&error.to_string())))?;
-        if bytes.len().saturating_add(chunk.len()) > FILE_PREVIEW_BYTES {
-            return Err(DetailError::PayloadLimit);
-        }
-        bytes.extend_from_slice(&chunk);
-    }
+        .map_err(|_| DetailError::Http("Moonraker tardó demasiado en responder".to_owned()))??;
     let binary = !is_text_content(content_type.as_deref(), &bytes);
     let text = (!binary)
         .then(|| String::from_utf8_lossy(&bytes).to_string())

@@ -1054,9 +1054,7 @@ async fn handle_camera_request(
             return;
         }
     };
-    let _ = camera_io
-        .state
-        .send_replace(Arc::new(CameraState::loading(uid.clone(), &previous)));
+    let _ = camera_io.state.send_replace(Arc::new(previous.clone()));
     let client = file_reader.client.clone();
     captures.spawn(async move {
         match fetch_snapshot(client, endpoint).await {

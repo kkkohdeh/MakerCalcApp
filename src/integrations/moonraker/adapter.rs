@@ -1070,6 +1070,13 @@ pub(crate) fn verify_response(body: &[u8]) -> bool {
     crate::discovery::valid_moonraker(body)
 }
 
+fn with_api_key(request: reqwest::RequestBuilder, auth: Option<&str>) -> reqwest::RequestBuilder {
+    match auth.map(str::trim).filter(|key| !key.is_empty()) {
+        Some(api_key) => request.header("X-Api-Key", api_key),
+        None => request,
+    }
+}
+
 async fn moonraker_active_filename(
     client: &reqwest::Client,
     scheme: &str,
@@ -1079,10 +1086,7 @@ async fn moonraker_active_filename(
     fallback: String,
 ) -> String {
     let query_url = format!("{scheme}://{host}:{port}/printer/objects/query?print_stats=filename");
-    let mut request = client.get(query_url);
-    if let Some(api_key) = auth.map(str::trim).filter(|key| !key.is_empty()) {
-        request = request.header("X-Api-Key", api_key);
-    }
+    let request = with_api_key(client.get(query_url), auth);
     let Ok(response) = request.send().await else {
         return fallback;
     };
@@ -1134,13 +1138,10 @@ pub(crate) async fn fetch_thumbnail(
     .await;
     let encoded_filename = percent_encode_path(&filename);
     let file_url = format!("{scheme}://{host}:{port}/server/files/gcodes/{encoded_filename}");
-    let mut req = client.get(&file_url).header("Range", "bytes=0-524287");
-    if let Some(ref api_key) = auth {
-        let trimmed = api_key.trim();
-        if !trimmed.is_empty() {
-            req = req.header("X-Api-Key", trimmed);
-        }
-    }
+    let req = with_api_key(
+        client.get(&file_url).header("Range", "bytes=0-524287"),
+        auth.as_deref(),
+    );
     let mut transport_failure = false;
     let range_res = req.send().await;
     match range_res {
@@ -1173,13 +1174,7 @@ pub(crate) async fn fetch_thumbnail(
     // Fall back to the Moonraker metadata thumbnail in .thumbs when present.
     let meta_url =
         format!("{scheme}://{host}:{port}/server/files/metadata?filename={encoded_filename}");
-    let mut meta_req = client.get(&meta_url);
-    if let Some(ref api_key) = auth {
-        let trimmed = api_key.trim();
-        if !trimmed.is_empty() {
-            meta_req = meta_req.header("X-Api-Key", trimmed);
-        }
-    }
+    let meta_req = with_api_key(client.get(&meta_url), auth.as_deref());
     match meta_req.send().await {
         Ok(meta_resp) => {
             if meta_resp.status().is_success()
@@ -1215,12 +1210,7 @@ pub(crate) async fn fetch_thumbnail(
                     let enc_rel = percent_encode_path(&full_rel);
                     let thumb_img_url =
                         format!("{scheme}://{host}:{port}/server/files/gcodes/{enc_rel}");
-                    let mut thumb_req = client.get(&thumb_img_url);
-                    if let Some(api_key) =
-                        auth.as_deref().map(str::trim).filter(|key| !key.is_empty())
-                    {
-                        thumb_req = thumb_req.header("X-Api-Key", api_key);
-                    }
+                    let thumb_req = with_api_key(client.get(&thumb_img_url), auth.as_deref());
                     match thumb_req.send().await {
                         Ok(thumb_resp) => {
                             if thumb_resp.status().is_success()
@@ -1299,6 +1289,7 @@ pub(crate) async fn run_adapter_with_thumbnail(
     thumbnail_io: crate::shared::thumbnail::ThumbnailIo,
 ) {
     let thumb_client = reqwest::Client::builder()
+        .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(4))
         .build()
