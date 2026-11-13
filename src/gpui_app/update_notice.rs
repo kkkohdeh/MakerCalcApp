@@ -61,7 +61,11 @@ impl MakerCalcGpuiApp {
                     Err(_) => {
                         let error = t!("settings.updates.check_failed").into_owned();
                         crate::updater::log_check_failure(&error);
-                        *app.updater.status.lock().unwrap() = UpdateStatus::Failed(error);
+                        *app.updater
+                            .status
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                            UpdateStatus::Failed(error);
                     }
                 }
                 app.notify_if_visible(cx);
@@ -151,6 +155,7 @@ impl MakerCalcGpuiApp {
                                 .right(px(8.))
                                 .icon(IconName::Close)
                                 .accessibility_label(t!("common.actions.close").into_owned())
+                                .tooltip(t!("common.actions.close"))
                                 .on_click(
                                     cx.listener(|app, _, _, cx| app.dismiss_update_notice(cx)),
                                 ),

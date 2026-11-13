@@ -364,7 +364,7 @@ impl MakerCalcGpuiApp {
                                                     .whitespace_normal()
                                                     .text_color(cx.theme().muted_foreground))
                                                 .child(h_flex().child(
-                                                    Button::new("open-makercalc-web")
+                                                    Button::new("open-web-portal")
                                                         .outline()
                                                         .small()
                                                         .label(t!("settings.api.web_open").into_owned())
@@ -454,7 +454,12 @@ impl MakerCalcGpuiApp {
                             )
                             .child(separator::horizontal("settings-cloud-updates-separator", cx))
                             .child({
-                                let update_status = self.updater.status.lock().unwrap().clone();
+                                let update_status = self
+                                    .updater
+                                    .status
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                    .clone();
                                 v_flex()
                                     .gap_3()
                                     .child(
@@ -528,9 +533,13 @@ impl MakerCalcGpuiApp {
                                                                 let updater = Arc::clone(&updater);
                                                                 cx.spawn(async move |app, cx| {
                                                                     if check.await.is_err() {
-                                                                        *updater.status.lock().unwrap() = UpdateStatus::Failed(
-                                                                            t!("settings.updates.check_failed").into_owned(),
-                                                                        );
+                                                                        *updater
+                                                                            .status
+                                                                            .lock()
+                                                                            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                                                                            UpdateStatus::Failed(
+                                                                                t!("settings.updates.check_failed").into_owned(),
+                                                                            );
                                                                     }
                                                                     let _ = app.update(cx, |_, cx| cx.notify());
                                                                 }).detach();

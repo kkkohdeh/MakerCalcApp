@@ -194,7 +194,10 @@ impl AutoUpdater {
         if crate::desktop::package::is_packaged() {
             return None; // A Store installation must never offer the GitHub EXE installer.
         }
-        let mut status = self.status.lock().unwrap();
+        let mut status = self
+            .status
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if *status == UpdateStatus::Checking {
             return None;
         }
@@ -218,7 +221,9 @@ impl AutoUpdater {
             if let UpdateStatus::Failed(error) = &next {
                 log_check_failure(error);
             }
-            *status.lock().unwrap() = next.clone();
+            *status
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = next.clone();
             next
         }))
     }

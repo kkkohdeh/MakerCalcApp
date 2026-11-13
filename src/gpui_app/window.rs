@@ -77,7 +77,12 @@ impl MakerCalcGpuiApp {
     }
 
     pub(super) fn render_title_bar(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        let update_status = self.updater.status.lock().unwrap().clone();
+        let update_status = self
+            .updater
+            .status
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         let compact = f32::from(window.viewport_size().width) < 900.;
         if let Some((id, printer)) = self
             .selected
