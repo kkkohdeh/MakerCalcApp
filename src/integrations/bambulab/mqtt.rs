@@ -11,7 +11,7 @@ use tokio::net::TcpStream;
 use tokio::time::{Instant, timeout};
 use tokio_native_tls::{TlsStream, native_tls};
 
-const USER: &str = "bblp";
+pub(super) const USER: &str = "bblp";
 const KEEP_ALIVE_S: u16 = 30;
 const PING_AFTER: Duration = Duration::from_secs(15);
 /// No packet for this long means the session is dead even if TCP has not noticed.
@@ -21,7 +21,7 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_PACKET: usize = 1024 * 1024;
 const MAX_REPORT_VALUES: usize = 8192;
 const MAX_REPORT_LIST_ITEMS: usize = 256;
-const CA_BUNDLE: &str = include_str!("ca.pem");
+pub(super) const CA_BUNDLE: &str = include_str!("ca.pem");
 
 /// Asks for the full state once per session. Some models rate-limit this request,
 /// so it is never repeated while the session lives.
@@ -31,7 +31,7 @@ const GET_VERSION: &[u8] = br#"{"info":{"sequence_id":"0","command":"get_version
 
 /// Fields that belong to one print job. They are dropped when a new job starts so the
 /// new job never shows the previous one's counters while its first deltas arrive.
-const JOB_FIELDS: [&str; 10] = [
+const JOB_FIELDS: [&str; 11] = [
     "mc_percent",
     "layer_num",
     "total_layer_num",
@@ -42,6 +42,7 @@ const JOB_FIELDS: [&str; 10] = [
     "mc_print_error_code",
     "subtask_name",
     "gcode_file",
+    "plate_idx",
 ];
 
 #[derive(Debug)]

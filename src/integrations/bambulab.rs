@@ -7,6 +7,7 @@ mod control;
 mod drying;
 mod machine;
 mod mqtt;
+mod thumbnail;
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -38,6 +39,7 @@ const EXTERNAL_MAIN: u32 = 255;
 
 /// Runs until shutdown. `credential` is `serial:access_code`, the same shape the
 /// configuration stores for FlashForge.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_driver(
     host: String,
     port: u16,
@@ -46,6 +48,7 @@ pub(crate) async fn run_driver(
     mut shutdown: watch::Receiver<bool>,
     detail_io: DetailIo,
     operation_io: OperationIo,
+    thumbnail_io: crate::shared::thumbnail::ThumbnailIo,
 ) {
     let Some((serial, access_code)) = credential
         .as_deref()
@@ -58,6 +61,19 @@ pub(crate) async fn run_driver(
         let _ = shutdown.changed().await;
         return;
     };
+    let thumbnails = thumbnail::Thumbnails::new(
+        host.clone(),
+        serial,
+        access_code,
+        shutdown.clone(),
+        state_sender.subscribe(),
+    );
+    let fetcher = thumbnails.clone();
+    let _thumbnail_task = tokio::spawn(crate::shared::thumbnail::run_thumbnail_actor(
+        thumbnail_io,
+        state_sender.subscribe(),
+        move |key| fetcher.clone().fetch(key),
+    ));
     let DetailIo {
         active,
         file_interest,
@@ -93,6 +109,7 @@ pub(crate) async fn run_driver(
             actions: &mut actions,
             machine_actions: &mut machine_actions,
             operations: &operations,
+            thumbnails: &thumbnails,
         };
         let (error, delivered) = tokio::select! {
             _ = shutdown.changed() => break,
@@ -153,6 +170,7 @@ struct Session<'a> {
     actions: &'a mut mpsc::Receiver<PrinterAction>,
     machine_actions: &'a mut mpsc::Receiver<MachineCommand>,
     operations: &'a watch::Sender<OperationState>,
+    thumbnails: &'a thumbnail::Thumbnails,
 }
 
 impl Session<'_> {
@@ -290,6 +308,8 @@ impl Session<'_> {
                 }
                 Err(error) => return (error, delivered),
             }
+            // Before publishing: a fetch the new job triggers must find its plate.
+            self.thumbnails.observe(candidate.value());
             let observation = observe(candidate.value(), self.model);
             let received_at = Instant::now();
             let mut accepted = false;
@@ -381,7 +401,7 @@ fn error_message(error: &mqtt::Error) -> String {
 }
 
 /// Translates the accumulated report. Only data the printer sends is published:
-/// elapsed time, filament used, linear velocity and thumbnails stay unknown.
+/// elapsed time, filament used and linear velocity stay unknown.
 fn observe(report: &Value, model: Option<&machine::Model>) -> PrinterObservation {
     let print = &report["print"];
     let status = status(print);

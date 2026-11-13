@@ -32,6 +32,10 @@ windows = { version = "=0.62.2", features = ["ApplicationModel", "Storage", "Dat
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "serde", "std"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 image = { version = "=0.25.10", default-features = false, features = ["bmp", "jpeg", "png", "webp"] }
+miniz_oxide = "=0.9.1"
+
+[target.'cfg(windows)'.dependencies]
+schannel = "=0.1.29"
 
 [build-dependencies]
 winres = "0.1"

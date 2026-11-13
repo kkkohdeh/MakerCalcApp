@@ -614,7 +614,7 @@ impl EdgeActor {
                 operation_io
                     .state
                     .send_replace(crate::shared::workspace::OperationState::ReadOnly);
-                drop((camera_io, thumbnail_io));
+                drop(camera_io);
                 self.runtime
                     .spawn(crate::integrations::bambulab::run_driver(
                         printer.connection.host,
@@ -624,6 +624,7 @@ impl EdgeActor {
                         driver_shutdown,
                         detail_io,
                         operation_io,
+                        thumbnail_io,
                     ))
             }
             Protocol::Moonraker => {
