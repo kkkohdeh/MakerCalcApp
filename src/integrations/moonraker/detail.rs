@@ -758,7 +758,7 @@ pub(crate) async fn fetch_file_preview(
             Ok::<_, DetailError>((content_type, range_end, total_bytes, bytes))
         })
         .await
-        .map_err(|_| DetailError::Http("Moonraker tardó demasiado en responder".to_owned()))??;
+        .map_err(|_| DetailError::Http(crate::i18n::t!("files.preview.timeout").into_owned()))??;
     let binary = !is_text_content(content_type.as_deref(), &bytes);
     let text = (!binary)
         .then(|| String::from_utf8_lossy(&bytes).to_string())

@@ -2287,7 +2287,7 @@ pub(crate) async fn run_driver_with_thumbnail(
                             FlashforgeError::Protocol("Respuesta supera 1 MiB".to_owned()),
                         ),
                         Err(_) => Err(FlashforgeError::Transport(
-                            "No se pudo leer la respuesta".to_owned(),
+                            crate::i18n::t!("printers.flashforge.response_read_error").into_owned(),
                         )),
                     }
                 } else {

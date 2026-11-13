@@ -89,7 +89,8 @@
     "preview": {
       "title": "Archivo seleccionado",
       "loading": "Cargando vista previa...",
-      "empty": "Vista previa no disponible"
+      "empty": "Vista previa no disponible",
+      "timeout": "La impresora tardó demasiado en enviar la vista previa."
     },
     "print": {
       "disabled": {

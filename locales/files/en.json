@@ -89,7 +89,8 @@
     "preview": {
       "title": "Selected file",
       "loading": "Loading preview…",
-      "empty": "Preview unavailable"
+      "empty": "Preview unavailable",
+      "timeout": "Printer took too long to send the preview."
     },
     "print": {
       "disabled": {
