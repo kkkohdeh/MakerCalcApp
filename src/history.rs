@@ -319,33 +319,39 @@ impl HistoryWorker {
 }
 
 impl HistoryHandle {
-    pub(crate) async fn global_page(&self, offset: u64) -> Result<LocalHistoryPage, String> {
+    async fn request<T>(
+        &self,
+        build: impl FnOnce(oneshot::Sender<Result<T, String>>) -> Command,
+        unavailable: impl FnOnce() -> String,
+    ) -> Result<T, String> {
         let (reply, received) = oneshot::channel();
-        self.sender
-            .send(Command::GlobalPage { offset, reply })
-            .await
-            .map_err(|_| crate::i18n::t!("history.query_error").into_owned())?;
-        received
-            .await
-            .map_err(|_| crate::i18n::t!("history.query_error").into_owned())?
+        if self.sender.send(build(reply)).await.is_err() {
+            return Err(unavailable());
+        }
+        received.await.map_err(|_| unavailable())?
+    }
+
+    pub(crate) async fn global_page(&self, offset: u64) -> Result<LocalHistoryPage, String> {
+        self.request(
+            |reply| Command::GlobalPage { offset, reply },
+            || crate::i18n::t!("history.query_error").into_owned(),
+        )
+        .await
     }
 
     pub(crate) async fn latest_native_start(
         &self,
         printer: &str,
     ) -> Result<Option<DateTime<Utc>>, String> {
-        let (reply, received) = oneshot::channel();
-        self.sender
-            .send(Command::LatestNativeStart {
+        self.request(
+            |reply| Command::LatestNativeStart {
                 printer: printer.to_owned(),
                 now_ms: Utc::now().timestamp_millis(),
                 reply,
-            })
-            .await
-            .map_err(|_| "Historial no disponible".to_owned())?;
-        received
-            .await
-            .map_err(|_| "Historial no disponible".to_owned())?
+            },
+            || "Historial no disponible".to_owned(),
+        )
+        .await
     }
     pub(crate) async fn import_committed(&self, records: Vec<HistoryRecord>) -> bool {
         let (reply, received) = oneshot::channel();
@@ -391,19 +397,16 @@ impl HistoryHandle {
         offset: u64,
         query: HistoryQuery,
     ) -> Result<LocalHistoryPage, String> {
-        let (reply, received) = oneshot::channel();
-        self.sender
-            .send(Command::Page {
+        self.request(
+            |reply| Command::Page {
                 printer: printer.to_owned(),
                 offset,
                 query,
                 reply,
-            })
-            .await
-            .map_err(|_| crate::i18n::t!("history.query_error").into_owned())?;
-        received
-            .await
-            .map_err(|_| crate::i18n::t!("history.query_error").into_owned())?
+            },
+            || crate::i18n::t!("history.query_error").into_owned(),
+        )
+        .await
     }
 
     pub(crate) async fn closed_ids(
@@ -412,33 +415,27 @@ impl HistoryHandle {
         since: Option<i64>,
         max: usize,
     ) -> Result<Vec<i64>, String> {
-        let (reply, received) = oneshot::channel();
-        self.sender
-            .send(Command::ClosedIds {
+        self.request(
+            |reply| Command::ClosedIds {
                 printer: printer.to_owned(),
                 since,
                 max: max.min(10_000),
                 reply,
-            })
-            .await
-            .map_err(|_| "Historial no disponible".to_owned())?;
-        received
-            .await
-            .map_err(|_| "Historial no disponible".to_owned())?
+            },
+            || "Historial no disponible".to_owned(),
+        )
+        .await
     }
 
     pub(crate) async fn closed(&self, rows: &[i64]) -> Result<Vec<HistoryRecord>, String> {
-        let (reply, received) = oneshot::channel();
-        self.sender
-            .send(Command::Closed {
+        self.request(
+            |reply| Command::Closed {
                 rows: rows.iter().take(100).copied().collect(),
                 reply,
-            })
-            .await
-            .map_err(|_| "Historial no disponible".to_owned())?;
-        received
-            .await
-            .map_err(|_| "Historial no disponible".to_owned())?
+            },
+            || "Historial no disponible".to_owned(),
+        )
+        .await
     }
 
     pub(crate) fn capture(&self, printer: String) -> Capture {
@@ -773,19 +770,11 @@ fn query_filtered_page(
         PrintStatus::Cancelled => "cancelled",
         PrintStatus::Error => "error",
     });
+    let trimmed_name = query.name.trim();
     let predicate = "printer_id=?1
         AND (?2='' OR instr(lower(COALESCE(json_extract(payload,'$.job.PrintName'),'')),lower(?2))>0)
         AND (?3 IS NULL OR json_extract(payload,'$.job.PrintState')=?3)
         AND (?4 IS NULL OR started_ms>=?4) AND (?5 IS NULL OR started_ms<?5)";
-    let total: i64 = connection
-        .query_row(
-            &format!("SELECT count(*) FROM print_history WHERE {predicate}"),
-            params![printer, query.name.trim(), state, from, until],
-            |row| row.get(0),
-        )
-        .map_err(|_| t!("history.query_error").into_owned())?;
-    let total = total as u64;
-    let offset = offset.min(total.saturating_sub(1) / HISTORY_PAGE_SIZE * HISTORY_PAGE_SIZE);
     // Only enum-selected SQL fragments are interpolated; all user values remain parameters.
     let column = match query.column {
         HistoryColumn::Name => "json_extract(payload,'$.job.PrintName') COLLATE NOCASE",
@@ -796,56 +785,58 @@ fn query_filtered_page(
         HistoryColumn::Length => "json_extract(payload,'$.job.PrintFilamentUsedMm')",
     };
     let direction = if query.descending { "DESC" } else { "ASC" };
-    let mut statement = connection
-        .prepare(&format!(
-            "SELECT substr(payload,1,16385) FROM print_history WHERE {predicate}
-         ORDER BY {column} {direction} NULLS LAST,started_ms DESC,job_uid LIMIT ?6 OFFSET ?7"
-        ))
-        .map_err(|_| t!("history.query_error").into_owned())?;
-    let records = statement
-        .query_map(
-            params![
-                printer,
-                query.name.trim(),
-                state,
-                from,
-                until,
-                HISTORY_PAGE_SIZE as i64,
-                offset as i64
-            ],
-            |row| row.get::<_, String>(0),
-        )
-        .map_err(|_| t!("history.query_error").into_owned())?
-        .map(|row| decode_record(&row.map_err(|_| t!("history.query_error").into_owned())?))
-        .collect::<Result<_, _>>()?;
-    Ok(LocalHistoryPage {
-        total,
+    let filters: [&dyn rusqlite::ToSql; 5] = [&printer, &trimmed_name, &state, &from, &until];
+    query_page(
+        connection,
+        predicate,
+        &format!("{column} {direction} NULLS LAST,started_ms DESC,job_uid"),
+        &filters,
         offset,
-        records,
-    })
+    )
 }
 
 fn query_global_page(connection: &Connection, offset: u64) -> Result<LocalHistoryPage, String> {
+    query_page(
+        connection,
+        "ended_ms IS NOT NULL",
+        "ended_ms DESC,started_ms DESC,printer_id,job_uid",
+        &[],
+        offset,
+    )
+}
+
+fn query_page(
+    connection: &Connection,
+    where_sql: &str,
+    order_sql: &str,
+    filters: &[&dyn rusqlite::ToSql],
+    offset: u64,
+) -> Result<LocalHistoryPage, String> {
     let error = || crate::i18n::t!("history.query_error").into_owned();
     let total: i64 = connection
         .query_row(
-            "SELECT count(*) FROM print_history WHERE ended_ms IS NOT NULL",
-            [],
+            &format!("SELECT count(*) FROM print_history WHERE {where_sql}"),
+            filters,
             |row| row.get(0),
         )
         .map_err(|_| error())?;
-    let total = total as u64;
+    let total = u64::try_from(total).unwrap_or(0);
     let offset = offset.min(total.saturating_sub(1) / HISTORY_PAGE_SIZE * HISTORY_PAGE_SIZE);
+    let limit_param = i64::try_from(HISTORY_PAGE_SIZE).unwrap_or(i64::MAX);
+    let offset_param = i64::try_from(offset).unwrap_or(i64::MAX);
+    let limit_idx = filters.len() + 1;
+    let offset_idx = filters.len() + 2;
     let mut statement = connection
-        .prepare(
-            "SELECT substr(payload,1,16385) FROM print_history WHERE ended_ms IS NOT NULL
-         ORDER BY ended_ms DESC,started_ms DESC,printer_id,job_uid LIMIT ?1 OFFSET ?2",
-        )
+        .prepare(&format!(
+            "SELECT substr(payload,1,16385) FROM print_history WHERE {where_sql}
+         ORDER BY {order_sql} LIMIT ?{limit_idx} OFFSET ?{offset_idx}"
+        ))
         .map_err(|_| error())?;
+    let mut page_params = filters.to_vec();
+    page_params.push(&limit_param);
+    page_params.push(&offset_param);
     let records = statement
-        .query_map(params![HISTORY_PAGE_SIZE as i64, offset as i64], |row| {
-            row.get::<_, String>(0)
-        })
+        .query_map(page_params.as_slice(), |row| row.get::<_, String>(0))
         .map_err(|_| error())?
         .map(|row| decode_record(&row.map_err(|_| error())?))
         .collect::<Result<_, _>>()?;
@@ -871,10 +862,9 @@ fn query_closed_ids(
         ORDER BY ended_ms ASC,job_uid",
         )
         .map_err(|_| "No se pudo consultar el historial".to_owned())?;
+    let max = i64::try_from(max).unwrap_or(i64::MAX);
     let rows = statement
-        .query_map(params![printer, since, max as i64], |row| {
-            row.get::<_, i64>(0)
-        })
+        .query_map(params![printer, since, max], |row| row.get::<_, i64>(0))
         .map_err(|_| "No se pudo consultar el historial".to_owned())?;
     rows.map(|row| row.map_err(|_| "No se pudo leer el historial".to_owned()))
         .collect()
