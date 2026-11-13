@@ -118,7 +118,7 @@ impl HistoryWorker {
                 let opened = open_database(path).and_then(|connection| {
                     let mut rows = connection
                         .prepare(
-                            "SELECT substr(payload,1,16385) FROM print_history WHERE ended_ms IS NULL LIMIT 250",
+                            "SELECT substr(payload,1,16385) FROM print_history WHERE ended_ms IS NULL ORDER BY started_ms ASC, last_ms ASC LIMIT 250",
                         )
                         .map_err(|_| "No se pudo recuperar el historial".to_owned())?;
                     let records = rows
@@ -127,11 +127,19 @@ impl HistoryWorker {
                     let mut cache = restored_worker
                         .lock()
                         .map_err(|_| "Historial no disponible".to_owned())?;
+                    let mut displaced = Vec::new();
                     let mut reported_invalid = false;
                     for record in records {
                         let decoded = record.map_err(|_| "No se pudo leer el historial".to_owned()).and_then(|payload| decode_record(&payload));
                         match decoded {
-                            Ok(record) => { cache.insert(record.printer_id.clone(), record); }
+                            Ok(record) => {
+                                if let Some(mut older) = cache.insert(record.printer_id.clone(), record) {
+                                    older.job.print_state = PrintStatus::Unknown;
+                                    older.incomplete = true;
+                                    older.ended_at = Some(older.last_observed_at);
+                                    displaced.push(older);
+                                }
+                            }
                             Err(error) => {
                                 worker_errors.send_replace(Some(error));
                                 if !reported_invalid {
@@ -147,6 +155,11 @@ impl HistoryWorker {
                     }
                     drop(cache);
                     drop(rows);
+                    for older in displaced {
+                        if let Err(error) = save(&connection, &older) {
+                            worker_errors.send_replace(Some(error));
+                        }
+                    }
                     Ok(connection)
                 });
                 let mut connection = match opened {
@@ -432,8 +445,8 @@ impl HistoryHandle {
         let restored = self
             .restored
             .lock()
-            .ok()
-            .and_then(|mut restored| restored.remove(&printer));
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&printer);
         Capture(Arc::new(Mutex::new(Tracker {
             handle: self.clone(),
             printer,
@@ -468,20 +481,24 @@ impl std::fmt::Debug for Capture {
 
 impl Capture {
     pub(crate) fn close_unknown(&self) {
-        if let Ok(mut tracker) = self.0.lock() {
-            tracker.close_unknown(Instant::now());
-        }
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .close_unknown(Instant::now());
     }
     pub(crate) fn disconnected(&self) {
-        if let Ok(mut tracker) = self.0.lock() {
-            tracker.restored = true;
-            tracker.persist(Instant::now());
-        }
+        let mut tracker = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        tracker.restored = true;
+        tracker.persist(Instant::now());
     }
     pub(crate) fn observe(&self, observation: &PrinterObservation, now: Instant) {
-        if let Ok(mut tracker) = self.0.lock() {
-            tracker.observe(observation, Utc::now(), now);
-        }
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .observe(observation, Utc::now(), now);
     }
 
     pub(crate) async fn checkpoint_checked(&self) -> Result<(), HistoryFlushError> {
@@ -632,13 +649,10 @@ impl Tracker {
     fn persist(&mut self, now: Instant) {
         if self.dirty
             && let Some(record) = &mut self.current
+            && self.handle.save(record.clone())
         {
-            if self.handle.save(record.clone()) {
-                self.dirty = false;
-                self.last_saved = Some(now);
-            } else {
-                record.incomplete = true;
-            }
+            self.dirty = false;
+            self.last_saved = Some(now);
         }
     }
 }
