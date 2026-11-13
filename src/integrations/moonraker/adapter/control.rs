@@ -67,6 +67,9 @@ pub(super) fn calibration_readiness(
     source: &raw::DetailState,
 ) -> crate::shared::machine::CalibrationReadiness {
     use crate::shared::machine::CalibrationReadiness;
+    if !source.live {
+        return CalibrationReadiness::NotReady;
+    }
     if motor_motion_idle(source) == Some(false) {
         return CalibrationReadiness::Busy;
     }
@@ -276,12 +279,6 @@ impl Projection {
         build_request(0, &prepared, source, telemetry)?;
         Ok(prepared)
     }
-}
-
-fn identifier(name: &str) -> bool {
-    !name.is_empty()
-        && name.len() <= 128
-        && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
 }
 
 pub(super) fn generic_fan_name(object: &str) -> Option<&str> {
@@ -549,7 +546,7 @@ pub(in crate::integrations::moonraker) fn build_request(
             }
             need_command(source, "SET_PRESSURE_ADVANCE")?;
             let name = target_device(control)?;
-            if !identifier(name)
+            if !super::local::valid_gcode_identifier(name)
                 || objects
                     .get(name)
                     .and_then(|v| v.get("pressure_advance"))
@@ -652,7 +649,7 @@ pub(in crate::integrations::moonraker) fn build_request(
             {
                 return Err(E::StaleResource);
             }
-            if !identifier(name)
+            if !super::local::valid_gcode_identifier(name)
                 || !objects
                     .get("exclude_object")
                     .and_then(|v| v.get("objects"))

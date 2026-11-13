@@ -853,7 +853,12 @@ impl Projection {
                 {
                     return Err(crate::i18n::t!("printers.temperature.unavailable").into_owned());
                 }
-                local::PrinterAction::SetTemperatureTarget { heater, target_c }
+                local::PrinterAction::SetTemperatureTarget {
+                    heater,
+                    target_c,
+                    connection_epoch,
+                    submitted_at,
+                }
             }
             A::ToggleLight { role, .. } => {
                 let binding = match role {
@@ -1565,7 +1570,10 @@ async fn bridge(
             }
             Some(action) = operation_io.actions.recv() => {
                 let kind = action.kind();
-                if pending_control.is_some() {
+                if pending_control.is_some()
+                    || operations.state.borrow().is_pending()
+                    || operations.actions.capacity() != operations.actions.max_capacity()
+                {
                     operation_io.state.send_replace(model::OperationState::Rejected {action:kind,message:crate::i18n::t!("printers.actions.busy_control").into_owned()});
                     continue;
                 }

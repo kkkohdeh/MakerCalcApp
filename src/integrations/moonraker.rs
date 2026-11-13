@@ -846,7 +846,10 @@ async fn event_loop(
                 handle_preview_result(detail, detail_io, preview);
             },
             _ = ping_interval.tick() => {
-                let _ = socket.send(Message::Ping(Vec::new().into())).await;
+                socket
+                    .send(Message::Ping(Vec::new().into()))
+                    .await
+                    .map_err(|error| MoonrakerError::Transport(error.to_string()))?;
             },
             _ = tokio::time::sleep_until(history_next_scan), if state.native_history.is_some() => {
                 let Some(native) = state.native_history.clone() else { continue; };
@@ -1260,8 +1263,20 @@ fn action_allowed(action: &PrinterAction, state: &PrinterState) -> Result<(), St
             crate::shared::workspace::PrinterActionKind::CancelPrint,
             context,
         ),
-        PrinterAction::SetTemperatureTarget { .. } => {
-            !matches!(status, PrintStatus::Printing | PrintStatus::Paused)
+        PrinterAction::SetTemperatureTarget {
+            connection_epoch,
+            submitted_at,
+            ..
+        } => {
+            let now = Instant::now();
+            state.connection == LanConnection::Connected
+                && state.telemetry_ready
+                && state.connection_epoch == *connection_epoch
+                && state.age_ms(now).is_some_and(|age| age <= 15_000)
+                && now
+                    .checked_duration_since(*submitted_at)
+                    .is_some_and(|age| age <= Duration::from_secs(5))
+                && !matches!(status, PrintStatus::Printing | PrintStatus::Paused)
         }
         PrinterAction::SetLightOutput { .. } | PrinterAction::RunLightMacro { .. } => true,
         PrinterAction::UploadGcode { destination, .. } => !matches!(

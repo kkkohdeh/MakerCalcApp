@@ -45,6 +45,8 @@ pub(crate) enum PrinterAction {
     SetTemperatureTarget {
         heater: HeaterKind,
         target_c: u16,
+        connection_epoch: u64,
+        submitted_at: std::time::Instant,
     },
     SetLightOutput {
         name: String,
@@ -147,7 +149,9 @@ pub(crate) fn build_control_request(
         PrinterAction::PausePrint(..) => ("printer.print.pause", None),
         PrinterAction::ResumePrint(..) => ("printer.print.resume", None),
         PrinterAction::CancelPrint(..) => ("printer.print.cancel", None),
-        PrinterAction::SetTemperatureTarget { heater, target_c } => {
+        PrinterAction::SetTemperatureTarget {
+            heater, target_c, ..
+        } => {
             let heater_name = match heater {
                 HeaterKind::Nozzle => "extruder",
                 HeaterKind::Bed => "heater_bed",
@@ -216,7 +220,7 @@ pub(crate) fn valid_gcode_filename(filename: &str) -> bool {
         .all(|segment| !segment.is_empty() && !matches!(segment, "." | ".."))
 }
 
-fn valid_gcode_identifier(value: &str) -> bool {
+pub(crate) fn valid_gcode_identifier(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 128
         && value
