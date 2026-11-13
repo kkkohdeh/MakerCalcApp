@@ -58,12 +58,14 @@ pub(crate) struct ThumbnailResourceKey {
     pub(crate) print_name: String,
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub(crate) struct NormalizedThumbnail {
     pub(crate) key: ThumbnailResourceKey,
     pub(crate) png_bytes: Bytes,
+    // Populated by integrations and asserted in producer tests before UI/cloud read dimensions.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) width: u32,
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) height: u32,
 }
 
@@ -196,54 +198,38 @@ pub(crate) async fn run_thumbnail_actor<F, Fut>(
                 let Some((key, result)) = done else {
                     continue;
                 };
-                if let Some((active_key, _)) = &active_fetch
+                let is_active = if let Some((active_key, _)) = &active_fetch
                     && *active_key == key
                 {
                     active_fetch = None;
-                }
+                    true
+                } else {
+                    false
+                };
 
                 let current = state.borrow();
-                let is_stale = key.connection_epoch != current.connection_epoch
+                let is_stale = !is_active
+                    || key.connection_epoch != current.connection_epoch
                     || key.job_generation != current.job_generation;
-
-                if is_stale {
-                    let mut still_waiting = Vec::new();
-                    for (k, tx) in waiters {
-                        if k == key {
-                            let _ = tx.send(Err(ThumbnailError::JobChanged));
-                        } else {
-                            still_waiting.push((k, tx));
-                        }
-                    }
-                    waiters = still_waiting;
+                let outcome = if is_stale {
+                    Err(ThumbnailError::JobChanged)
                 } else {
-                    match result {
-                        Ok(thumb) => {
-                            let arc_thumb = Arc::new(thumb);
-                            cached = Some(arc_thumb.clone());
-                            let mut still_waiting = Vec::new();
-                            for (k, tx) in waiters {
-                                if k == key {
-                                    let _ = tx.send(Ok(arc_thumb.clone()));
-                                } else {
-                                    still_waiting.push((k, tx));
-                                }
-                            }
-                            waiters = still_waiting;
-                        }
-                        Err(err) => {
-                            let mut still_waiting = Vec::new();
-                            for (k, tx) in waiters {
-                                if k == key {
-                                    let _ = tx.send(Err(err));
-                                } else {
-                                    still_waiting.push((k, tx));
-                                }
-                            }
-                            waiters = still_waiting;
-                        }
+                    result.map(|thumb| {
+                        let arc_thumb = Arc::new(thumb);
+                        cached = Some(arc_thumb.clone());
+                        arc_thumb
+                    })
+                };
+
+                let mut still_waiting = Vec::new();
+                for (k, tx) in waiters {
+                    if k == key {
+                        let _ = tx.send(outcome.clone());
+                    } else {
+                        still_waiting.push((k, tx));
                     }
                 }
+                waiters = still_waiting;
             }
             req = io.requests.recv() => {
                 let Some(req) = req else {
@@ -307,24 +293,44 @@ pub(crate) async fn run_thumbnail_actor<F, Fut>(
                 waiters.push((req.key.clone(), req.reply));
 
                 if !is_already_fetching {
+                    struct PanicNotify {
+                        key: Option<ThumbnailResourceKey>,
+                        tx: tokio::sync::mpsc::Sender<(
+                            ThumbnailResourceKey,
+                            Result<NormalizedThumbnail, ThumbnailError>,
+                        )>,
+                    }
+                    impl Drop for PanicNotify {
+                        fn drop(&mut self) {
+                            if std::thread::panicking()
+                                && let Some(key) = self.key.take()
+                            {
+                                let _ = self.tx.try_send((key, Err(ThumbnailError::Unavailable)));
+                            }
+                        }
+                    }
+
                     let fetch_tx = fetch_tx.clone();
                     let key = req.key;
                     let fetch_key = key.clone();
                     let fetch_impl = fetch_fn.clone();
                     let handle = tokio::spawn(async move {
+                        let mut panic_guard = PanicNotify {
+                            key: Some(fetch_key.clone()),
+                            tx: fetch_tx.clone(),
+                        };
                         let Ok(_permit) = GLOBAL_THUMBNAIL_SEMAPHORE.acquire().await else {
+                            panic_guard.key = None;
                             let _ = fetch_tx.send((fetch_key, Err(ThumbnailError::Closed))).await;
                             return;
                         };
-                        let res = tokio::time::timeout(
+                        let result = tokio::time::timeout(
                             std::time::Duration::from_secs(4),
                             fetch_impl(fetch_key.clone()),
                         )
-                        .await;
-                        let result = match res {
-                            Ok(inner) => inner,
-                            Err(_) => Err(ThumbnailError::Unavailable),
-                        };
+                        .await
+                        .unwrap_or(Err(ThumbnailError::Unavailable));
+                        panic_guard.key = None;
                         let _ = fetch_tx.send((fetch_key, result)).await;
                     });
                     active_fetch = Some((key, handle.abort_handle()));
@@ -547,7 +553,6 @@ pub(crate) fn validate_camera_frame(
     Ok(())
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn normalize_thumbnail_png(bytes: &[u8]) -> Option<Bytes> {
     normalize_thumbnail_image(bytes).map(|(bytes, _, _)| bytes)
 }
