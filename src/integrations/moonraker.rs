@@ -2140,6 +2140,7 @@ fn record_result_capabilities(detail: &mut DetailSession, method: &str, result: 
     match method {
         "server.info" => record_names(&mut detail.roots, "registered_directories"),
         "server.files.roots" => {
+            detail.roots.clear();
             if let Some(roots) = result.as_array() {
                 for root in roots {
                     if let Some(name) = root.get("name").and_then(Value::as_str) {
@@ -2150,11 +2151,27 @@ fn record_result_capabilities(detail: &mut DetailSession, method: &str, result: 
                 record_names(&mut detail.roots, "roots");
             }
         }
-        "server.database.list" => record_names(&mut detail.namespaces, "namespaces"),
-        "machine.device_power.devices" => record_names(&mut detail.devices, "devices"),
-        "server.sensors.list" => record_names(&mut detail.sensors, "sensors"),
-        "machine.wled.strips" => record_names(&mut detail.wled_strips, "strips"),
+        "server.database.list" => {
+            detail.namespaces.clear();
+            record_names(&mut detail.namespaces, "namespaces");
+        }
+        "machine.device_power.devices" => {
+            detail.devices.clear();
+            record_names(&mut detail.devices, "devices");
+        }
+        "server.sensors.list" => {
+            detail.sensors.clear();
+            record_names(&mut detail.sensors, "sensors");
+        }
+        "machine.wled.strips" => {
+            detail.wled_strips.clear();
+            record_names(&mut detail.wled_strips, "strips");
+        }
         "server.webcams.list" | "server.webcams.get_item" => {
+            if method == "server.webcams.list" {
+                detail.cameras.clear();
+                detail.camera_snapshots.clear();
+            }
             if let Some(cameras) = result.get("webcams").and_then(Value::as_array) {
                 for camera in cameras {
                     record_camera_capability(detail, camera);
@@ -2618,20 +2635,26 @@ fn apply_fields(
                     !suffix.is_empty() && suffix.bytes().all(|byte| byte.is_ascii_digit())
                 })
             {
-                if let Some(obj) = val.as_object() {
+                let id_num = if key == "extruder" {
+                    1
+                } else {
+                    key["extruder".len()..]
+                        .parse::<u32>()
+                        .unwrap_or(0)
+                        .saturating_add(1)
+                };
+                if val.is_null() {
+                    if let Some(existing) = next.nozzles.iter_mut().find(|n| n.id.0 == id_num) {
+                        existing.nozzle_temp_c = None;
+                        existing.nozzle_target_temp_c = None;
+                    }
+                    recognized = true;
+                } else if let Some(obj) = val.as_object() {
                     let temp = obj
                         .get("temperature")
                         .map(parse_optional_finite)
                         .transpose()?;
                     let target = obj.get("target").map(parse_optional_finite).transpose()?;
-                    let id_num = if key == "extruder" {
-                        1
-                    } else {
-                        key["extruder".len()..]
-                            .parse::<u32>()
-                            .unwrap_or(0)
-                            .saturating_add(1)
-                    };
                     let is_active = key == nozzle_object;
                     if let Some(existing) = next.nozzles.iter_mut().find(|n| n.id.0 == id_num) {
                         existing.is_active = is_active;

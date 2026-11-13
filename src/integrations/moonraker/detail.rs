@@ -439,7 +439,7 @@ impl DetailCache {
             return Ok(false);
         }
         validate_eventtime(eventtime)?;
-        validate_objects(objects)?;
+        validate_objects(objects, false)?;
         validate_payload(objects, self.max_bytes)?;
         if self.eventtime.is_some_and(|previous| eventtime < previous) {
             return Ok(false);
@@ -459,13 +459,17 @@ impl DetailCache {
             return Ok(false);
         }
         validate_eventtime(eventtime)?;
-        validate_objects(delta)?;
+        validate_objects(delta, true)?;
         if self.eventtime.is_some_and(|previous| eventtime < previous) {
             return Ok(false);
         }
         let mut next = self.objects.clone();
         let target = next.as_object_mut().ok_or(DetailError::InvalidPayload)?;
         for (object_name, fields) in delta.as_object().ok_or(DetailError::InvalidPayload)? {
+            if fields.is_null() {
+                target.remove(object_name);
+                continue;
+            }
             let target_fields = target
                 .entry(object_name.clone())
                 .or_insert_with(|| Value::Object(Map::new()))
@@ -509,10 +513,14 @@ fn validate_eventtime(eventtime: f64) -> Result<(), DetailError> {
         .ok_or(DetailError::InvalidPayload)
 }
 
-fn validate_objects(value: &Value) -> Result<(), DetailError> {
+fn validate_objects(value: &Value, allow_null: bool) -> Result<(), DetailError> {
     value
         .as_object()
-        .filter(|objects| objects.values().all(Value::is_object))
+        .filter(|objects| {
+            objects
+                .values()
+                .all(|field| field.is_object() || (allow_null && field.is_null()))
+        })
         .map(|_| ())
         .ok_or(DetailError::InvalidPayload)
 }
