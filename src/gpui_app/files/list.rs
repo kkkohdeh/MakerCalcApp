@@ -58,7 +58,6 @@ impl FileRange {
             _ => false,
         }
     }
-    #[allow(dead_code)]
     pub(in crate::gpui_app) fn label_with_locale(
         self,
         duration: bool,

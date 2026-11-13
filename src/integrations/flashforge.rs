@@ -2207,34 +2207,6 @@ pub(crate) async fn fetch_thumbnail(
 
 /// Poll `/detail` every 2 s while printing, otherwise every 5 s.
 /// Valid telemetry connects; repeated network errors reconnect while preserving stale readings.
-#[allow(clippy::too_many_arguments, dead_code)]
-pub(crate) async fn run_driver(
-    id: LocalPrinterId,
-    host: String,
-    port: u16,
-    api_key: Option<String>,
-    state_sender: watch::Sender<PrinterState>,
-    shutdown: watch::Receiver<bool>,
-    detail_io: DetailIo,
-    operation_io: OperationIo,
-) {
-    let (_thumb_handle, thumb_io) = crate::shared::thumbnail::make_thumbnail_channels();
-    let (_camera_handle, camera_io) = crate::shared::workspace::make_camera_channels();
-    run_driver_with_thumbnail(
-        id,
-        host,
-        port,
-        api_key,
-        state_sender,
-        shutdown,
-        detail_io,
-        operation_io,
-        thumb_io,
-        camera_io,
-    )
-    .await;
-}
-
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_driver_with_thumbnail(
     _id: LocalPrinterId,
@@ -2339,35 +2311,19 @@ pub(crate) async fn run_driver_with_thumbnail(
         let poll_result = match request.send().await {
             Ok(response) => {
                 if response.status().is_success() {
-                    let mut bytes = Vec::new();
-                    let mut stream = response.bytes_stream();
-                    let mut read_err = None;
-                    while let Some(chunk_res) = stream.next().await {
-                        match chunk_res {
-                            Ok(chunk) => {
-                                if bytes.len().saturating_add(chunk.len()) > 1024 * 1024 {
-                                    read_err = Some(FlashforgeError::Protocol(
-                                        "Respuesta supera 1 MiB".to_owned(),
-                                    ));
-                                    break;
-                                }
-                                bytes.extend_from_slice(&chunk);
-                            }
-                            Err(e) => {
-                                read_err = Some(FlashforgeError::Transport(e.to_string()));
-                                break;
-                            }
-                        }
-                    }
-                    if let Some(err) = read_err {
-                        Err(err)
-                    } else {
-                        match String::from_utf8(bytes) {
+                    match bounded_flashforge_body(response, 1024 * 1024).await {
+                        Ok(bytes) => match String::from_utf8(bytes) {
                             Ok(text) => parse_json_response_full(&text),
                             Err(e) => Err(FlashforgeError::Protocol(format!(
                                 "Respuesta no es UTF-8 válido: {e}"
                             ))),
-                        }
+                        },
+                        Err(crate::shared::thumbnail::ThumbnailError::Oversized) => Err(
+                            FlashforgeError::Protocol("Respuesta supera 1 MiB".to_owned()),
+                        ),
+                        Err(_) => Err(FlashforgeError::Transport(
+                            "No se pudo leer la respuesta".to_owned(),
+                        )),
                     }
                 } else {
                     Err(FlashforgeError::Transport(format!(

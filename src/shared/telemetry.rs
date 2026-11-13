@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::shared::printer::{PrintStatus, PrinterObservation};
 
+#[cfg(test)]
 pub(crate) const DICTIONARY_VERSION: &str = "21-v1";
 pub(crate) const MAX_LIGHTS: usize = 8;
 
@@ -109,7 +110,6 @@ impl PartialEq for FilamentSensorTelemetry {
 impl Eq for FilamentSensorTelemetry {}
 
 impl FilamentSensorTelemetry {
-    #[allow(dead_code)]
     pub(crate) fn new(id: ElementId, filament_present: Option<bool>) -> Self {
         Self {
             id,
@@ -228,6 +228,7 @@ impl Default for PrinterTelemetry {
 }
 
 /// Top-level envelope for normalized export / fixtures.
+#[cfg(test)]
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub(crate) struct TelemetryEnvelope {
     #[serde(rename = "dictionary_version")]
@@ -242,20 +243,26 @@ pub(crate) struct TelemetryEnvelope {
     pub(crate) telemetry: PrinterTelemetry,
 }
 
-#[allow(dead_code, clippy::enum_variant_names)]
+#[allow(clippy::enum_variant_names)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum TelemetryValidationError {
     InvalidProgress,
+    #[cfg(test)]
     InvalidTemperature,
     InvalidLayers,
     InvalidDuration,
     InvalidFilament,
+    #[cfg(test)]
     InvalidFan,
+    #[cfg(test)]
     InvalidVelocity,
     InvalidSpeedOverride,
     InvalidThumbnailHash,
+    #[cfg(test)]
     InvalidColor,
+    #[cfg(test)]
     InvalidAlert,
+    #[cfg(test)]
     InvalidLights,
 }
 
@@ -263,16 +270,22 @@ impl std::fmt::Display for TelemetryValidationError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let message = match self {
             Self::InvalidProgress => "progreso fuera del rango 0–100",
+            #[cfg(test)]
             Self::InvalidTemperature => "temperatura inválida",
             Self::InvalidLayers => "capas inválidas",
             Self::InvalidDuration => "duración inválida",
             Self::InvalidFilament => "filamento inválido",
+            #[cfg(test)]
             Self::InvalidFan => "ventilador de refrigeración inválido",
+            #[cfg(test)]
             Self::InvalidVelocity => "velocidad del cabezal inválida",
             Self::InvalidSpeedOverride => "ajuste de velocidad inválido",
             Self::InvalidThumbnailHash => "hash de miniatura inválido",
+            #[cfg(test)]
             Self::InvalidColor => "color de filamento inválido (debe ser #RRGGBB)",
+            #[cfg(test)]
             Self::InvalidAlert => "alerta inválida",
+            #[cfg(test)]
             Self::InvalidLights => "demasiadas luces",
         };
         formatter.write_str(message)
@@ -283,7 +296,7 @@ impl std::error::Error for TelemetryValidationError {}
 
 impl PrinterTelemetry {
     /// Validates all 21 concepts against domain constraints.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn validate(&self) -> Result<(), TelemetryValidationError> {
         if self.lights.len() > MAX_LIGHTS {
             return Err(TelemetryValidationError::InvalidLights);
@@ -347,7 +360,6 @@ impl PrinterTelemetry {
         Ok(())
     }
 
-    #[allow(dead_code)]
     pub(crate) fn active_nozzle(&self) -> Option<&NozzleTelemetry> {
         self.nozzles.iter().find(|nozzle| nozzle.is_active)
     }
@@ -360,7 +372,6 @@ impl PrinterTelemetry {
         self.active_nozzle().and_then(|n| n.nozzle_target_temp_c)
     }
 
-    #[allow(dead_code)]
     pub(crate) fn primary_bed(&self) -> Option<&BedTelemetry> {
         self.beds.first()
     }
@@ -373,7 +384,6 @@ impl PrinterTelemetry {
         self.primary_bed().and_then(|b| b.bed_target_temp_c)
     }
 
-    #[allow(dead_code)]
     pub(crate) fn primary_fan(&self) -> Option<&PartCoolingFanTelemetry> {
         self.part_cooling_fans.first()
     }
@@ -382,12 +392,12 @@ impl PrinterTelemetry {
         self.primary_fan().and_then(|f| f.power_pct)
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub(crate) fn primary_fan_rpm(&self) -> Option<f64> {
         self.primary_fan().and_then(|f| f.rpm)
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn any_filament_present(&self) -> Option<bool> {
         let mut any_reported = false;
         for sensor in &self.filament_sensors {
@@ -521,7 +531,6 @@ pub(crate) fn merge_job_observation(
 }
 
 impl JobTelemetry {
-    #[allow(dead_code)]
     pub(crate) fn validate(&self) -> Result<(), TelemetryValidationError> {
         validate_finite_range(self.print_progress_pct, 0.0, 100.0)
             .map_err(|()| TelemetryValidationError::InvalidProgress)?;
@@ -576,7 +585,7 @@ pub(crate) fn thumbnail_sha256_is_valid(hash: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 fn validate_finite(value: Option<f64>) -> Result<(), ()> {
     if value.is_some_and(|number| !number.is_finite()) {
         return Err(());
@@ -584,7 +593,6 @@ fn validate_finite(value: Option<f64>) -> Result<(), ()> {
     Ok(())
 }
 
-#[allow(dead_code)]
 fn validate_finite_range(value: Option<f64>, minimum: f64, maximum: f64) -> Result<(), ()> {
     if value.is_some_and(|number| !number.is_finite() || number < minimum || number > maximum) {
         return Err(());
@@ -592,8 +600,7 @@ fn validate_finite_range(value: Option<f64>, minimum: f64, maximum: f64) -> Resu
     Ok(())
 }
 
-#[allow(dead_code)]
-fn validate_hex_color(color: &str) -> bool {
+pub(crate) fn validate_hex_color(color: &str) -> bool {
     let bytes = color.as_bytes();
     if bytes.len() != 7 || bytes[0] != b'#' {
         return false;

@@ -237,6 +237,7 @@ fn technical_rows(
             heading: None,
             content: cards::card_shell(card.kind, None, part.0, part.1, cx)
                 .w(px(column))
+                .h_full()
                 .into_any_element(),
         }
     }));

@@ -20,7 +20,7 @@ impl PendingDisconnects {
             NoticeKind::Offline => {
                 self.0
                     .entry(notice.printer_id)
-                    .or_insert(Instant::from_std(notice.observed_at) + DISCONNECT_GRACE);
+                    .or_insert_with(|| Instant::from_std(notice.observed_at) + DISCONNECT_GRACE);
                 None
             }
             NoticeKind::Online => {

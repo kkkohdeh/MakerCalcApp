@@ -1257,7 +1257,7 @@ pub(crate) async fn fetch_thumbnail(
     }
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 pub(crate) async fn run_adapter(
     config: DriverConfig,
     state: watch::Sender<PrinterState>,

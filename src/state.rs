@@ -199,7 +199,11 @@ impl Snapshot {
 
     pub(crate) fn sanitized(mut self) -> Result<Self, ValidationError> {
         self.validate()?;
-        self.filename = self.filename.as_deref().map(sanitize_filename);
+        self.filename = self
+            .filename
+            .as_deref()
+            .map(sanitize_filename)
+            .filter(|name| !name.is_empty());
         if let Some(alerts) = self.alerts.as_mut() {
             for alert in alerts {
                 alert.message = sanitize_message(&alert.message, 512);
@@ -356,7 +360,7 @@ impl PrinterState {
             .and_then(|duration| u64::try_from(duration.as_millis()).ok())
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn telemetry_envelope(
         &self,
         session_generation: u64,
@@ -374,34 +378,18 @@ impl PrinterState {
 
 pub(crate) fn sanitize_filename(value: &str) -> String {
     let component = value.rsplit(['/', '\\']).next().unwrap_or_default();
-    truncate_utf8(
-        &component
-            .chars()
-            .filter(|character| !character.is_control())
-            .collect::<String>(),
-        1024,
-    )
+    sanitize_message(component, 1024)
 }
 
 pub(crate) fn sanitize_message(value: &str, maximum_bytes: usize) -> String {
-    truncate_utf8(
-        &value
-            .chars()
-            .filter(|character| !character.is_control())
-            .collect::<String>(),
-        maximum_bytes,
-    )
-}
-
-fn truncate_utf8(value: &str, maximum_bytes: usize) -> String {
-    if value.len() <= maximum_bytes {
-        return value.to_owned();
+    let mut sanitized = String::with_capacity(value.len().min(maximum_bytes));
+    for character in value.chars().filter(|character| !character.is_control()) {
+        if sanitized.len() + character.len_utf8() > maximum_bytes {
+            break;
+        }
+        sanitized.push(character);
     }
-    let mut end = maximum_bytes;
-    while !value.is_char_boundary(end) {
-        end -= 1;
-    }
-    value[..end].to_owned()
+    sanitized
 }
 
 fn validate_finite(value: Option<f64>) -> Result<(), ()> {

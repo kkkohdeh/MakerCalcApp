@@ -113,12 +113,7 @@ pub(crate) struct LoggerGuard {
 }
 
 impl LoggerGuard {
-    pub(crate) fn shutdown(mut self) {
-        let _ = self.sender.send(Command::Shutdown);
-        if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
-        }
-    }
+    pub(crate) fn shutdown(self) {}
 }
 
 impl Drop for LoggerGuard {
@@ -147,7 +142,7 @@ pub(crate) fn init_default() -> io::Result<LoggerGuard> {
         let _ = worker.join();
         return Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
-            "el diagnóstico ya fue inicializado",
+            "diagnostics already initialized",
         ));
     }
     let _ = CRASH_PATH.set(crash_path);
@@ -167,7 +162,7 @@ fn run_logger(receiver: mpsc::Receiver<Command>, log_path: &Path) {
                     push_display_line(&line);
                 }
                 if let Err(error) = append_rotating(log_path, &line, MAX_LOG_BYTES) {
-                    eprintln!("MakerCalc no pudo escribir el log: {error}");
+                    eprintln!("MakerCalc could not write log: {error}");
                 }
                 write_dropped_summary(log_path);
             }

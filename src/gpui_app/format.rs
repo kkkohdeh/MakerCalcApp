@@ -66,20 +66,6 @@ fn format_read_value_with_locale<T>(
     .into_owned()
 }
 
-#[allow(dead_code)]
-pub(super) fn format_age(age_ms: Option<u64>) -> String {
-    match age_ms {
-        None => crate::i18n::t!("common.labels.no_sample").into_owned(),
-        Some(ms) if ms < 1000 => "< 1 s".to_owned(),
-        Some(ms) if ms < 60_000 => {
-            crate::i18n::t!("common.labels.seconds", count = (ms / 1000).to_string()).into_owned()
-        }
-        Some(ms) => {
-            crate::i18n::t!("common.labels.minutes", count = (ms / 60_000).to_string()).into_owned()
-        }
-    }
-}
-
 pub(super) fn print_status_label(status: PrintStatus) -> String {
     match status {
         PrintStatus::Unknown => crate::i18n::t!("common.status.unknown").into_owned(),

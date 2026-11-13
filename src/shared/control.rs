@@ -289,12 +289,7 @@ impl MachineAction {
             }
             Self::ConfigureFilamentSupply {
                 material, color, ..
-            } => {
-                valid_label(material, 64)
-                    && color.len() == 7
-                    && color.starts_with('#')
-                    && color.as_bytes()[1..].iter().all(u8::is_ascii_hexdigit)
-            }
+            } => valid_label(material, 64) && super::telemetry::validate_hex_color(color),
             _ => true,
         };
         if valid {

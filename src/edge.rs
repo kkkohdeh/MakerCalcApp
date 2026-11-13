@@ -8,9 +8,7 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
-use crate::cloud::{
-    CloudConfig, CloudPrinterReceiver, CloudRegistry, CloudView, Device, run_cloud,
-};
+use crate::cloud::{CloudConfig, CloudPrinterReceiver, CloudRegistry, CloudView, run_cloud};
 use crate::config::{
     ConfigError, ConfigStore, PersistedConfig, PrinterConfig, PrinterDraft, Protocol,
 };
@@ -408,14 +406,7 @@ impl EdgeActor {
                         self.emit("Impresora guardada");
                         Ok(())
                     }
-                    Err(error) => {
-                        let msg = sanitize_message(
-                            &format!("No se pudo guardar la impresora: {error}"),
-                            512,
-                        );
-                        self.emit(&msg);
-                        Err(msg)
-                    }
+                    Err(error) => self.emit_sanitized_err("No se pudo guardar la impresora", error),
                 }
             }
             EdgeAction::UpdatePrinter { id, draft } => {
@@ -446,12 +437,7 @@ impl EdgeActor {
                         Ok(())
                     }
                     Err(error) => {
-                        let msg = sanitize_message(
-                            &format!("No se pudo actualizar la impresora: {error}"),
-                            512,
-                        );
-                        self.emit(&msg);
-                        Err(msg)
+                        self.emit_sanitized_err("No se pudo actualizar la impresora", error)
                     }
                 }
             }
@@ -470,12 +456,7 @@ impl EdgeActor {
                         Ok(())
                     }
                     Err(error) => {
-                        let msg = sanitize_message(
-                            &format!("No se pudo actualizar la impresora: {error}"),
-                            512,
-                        );
-                        self.emit(&msg);
-                        Err(msg)
+                        self.emit_sanitized_err("No se pudo actualizar la impresora", error)
                     }
                 }
             }
@@ -500,12 +481,7 @@ impl EdgeActor {
                         Ok(())
                     }
                     Err(error) => {
-                        let msg = sanitize_message(
-                            &format!("No se pudo eliminar la impresora: {error}"),
-                            512,
-                        );
-                        self.emit(&msg);
-                        Err(msg)
+                        self.emit_sanitized_err("No se pudo eliminar la impresora", error)
                     }
                 }
             }
@@ -545,12 +521,7 @@ impl EdgeActor {
                         }
                     }
                     Err(error) => {
-                        let msg = sanitize_message(
-                            &format!("No se pudo guardar la credencial cloud: {error}"),
-                            512,
-                        );
-                        self.emit(&msg);
-                        Err(msg)
+                        self.emit_sanitized_err("No se pudo guardar la credencial cloud", error)
                     }
                 }
             }
@@ -750,7 +721,7 @@ impl EdgeActor {
                 .moonraker_api_key(printer.local_id)
                 .ok()
                 .flatten();
-            let device = device_for_cloud(printer, decrypted_auth.as_deref());
+            let device = cloud_device_metadata(printer, decrypted_auth.as_deref());
             let credential_status = if decrypted_auth.is_some() {
                 crate::shared::printer::CredentialStatus::Configured
             } else {
@@ -772,12 +743,10 @@ impl EdgeActor {
                 serial_suffix: device.as_ref().and_then(|d| d.serial_suffix.clone()),
                 local_ip: device.as_ref().and_then(|d| d.local_ip),
             };
+            let cloud_id = derived_cloud_printer_id(&self.config.installation_id, printer.local_id);
             ui_printers.push(UiPrinterReceiver {
                 history: self.history.handle(),
-                history_id: derived_cloud_printer_id(
-                    &self.config.installation_id,
-                    printer.local_id,
-                ),
+                history_id: cloud_id.clone(),
                 id: printer.local_id,
                 name: printer.name.clone(),
                 session_generation: task.generation,
@@ -792,10 +761,7 @@ impl EdgeActor {
             cloud_printers.push(CloudPrinterReceiver {
                 id: printer.local_id,
                 generation: task.generation,
-                cloud_printer_id: derived_cloud_printer_id(
-                    &self.config.installation_id,
-                    printer.local_id,
-                ),
+                cloud_printer_id: cloud_id,
                 name: printer.name.clone(),
                 receiver: task.receiver.clone(),
                 detail: task.detail.clone(),
@@ -820,6 +786,16 @@ impl EdgeActor {
             .diagnostics
             .try_send(sanitize_message(message.as_ref(), 512));
     }
+
+    fn emit_sanitized_err(
+        &self,
+        prefix: &str,
+        error: impl std::fmt::Display,
+    ) -> Result<(), String> {
+        let msg = sanitize_message(&format!("{prefix}: {error}"), 512);
+        self.emit(&msg);
+        Err(msg)
+    }
 }
 
 pub(crate) fn cloud_device_metadata(
@@ -842,13 +818,6 @@ pub(crate) fn cloud_device_metadata(
             local_ip,
         })
     }
-}
-
-fn device_for_cloud(printer: &PrinterConfig, secret: Option<&str>) -> Option<Device> {
-    cloud_device_metadata(printer, secret).map(|m| Device {
-        serial_suffix: m.serial_suffix,
-        local_ip: m.local_ip,
-    })
 }
 
 fn flashforge_serial_suffix(secret: Option<&str>) -> Option<String> {

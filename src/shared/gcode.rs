@@ -214,7 +214,10 @@ fn normalize_header_key(key: &str) -> String {
             previous_was_separator = true;
         }
     }
-    normalized.trim_matches('_').to_owned()
+    if normalized.ends_with('_') {
+        normalized.pop();
+    }
+    normalized
 }
 
 fn is_slicer_variable(key: &str, normalized_key: &str, value: &str) -> bool {

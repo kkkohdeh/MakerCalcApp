@@ -33,11 +33,6 @@ pub(crate) struct DesktopPreferences {
     pub(crate) start_in_background: bool,
     pub(crate) language: UiLanguage,
 }
-#[allow(unused_imports)]
-pub(crate) use super::thumbnail::{
-    NormalizedThumbnail, ThumbnailError, ThumbnailHandle, ThumbnailIo, ThumbnailRequest,
-    ThumbnailResourceKey, make_thumbnail_channels,
-};
 
 /// Opaque, process-local handle; not a filename or a durable business identity.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -328,11 +323,8 @@ pub(crate) enum DetailRequest {
     ListFiles,
     InspectFile(ResourceId),
     HistoryTotals,
-    #[allow(dead_code)]
     Queue,
-    #[allow(dead_code)]
     Cameras,
-    #[allow(dead_code)]
     Peripherals,
     #[allow(dead_code)]
     System,
@@ -703,11 +695,12 @@ pub(crate) fn validate_upload(
     source: &Path,
     destination: &str,
 ) -> Result<u64, UploadValidationError> {
-    let lower = destination.to_ascii_lowercase();
-    if !(lower.ends_with(".gcode") || lower.ends_with(".g"))
+    if destination.len() > 512
         || destination.contains(['/', '\\'])
-        || destination.len() > 512
         || destination.chars().any(char::is_control)
+        || !destination.rsplit_once('.').is_some_and(|(_, ext)| {
+            ext.eq_ignore_ascii_case("gcode") || ext.eq_ignore_ascii_case("g")
+        })
     {
         return Err(UploadValidationError::InvalidName);
     }

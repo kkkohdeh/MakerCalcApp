@@ -16,17 +16,19 @@ pub(super) fn control_device(printer: &PrinterEntry, id: ResourceId) -> Option<&
         .find(|device| device.id == id)
 }
 
+fn parse_decimal(value: &str) -> Result<f64, ControlError> {
+    value
+        .trim()
+        .replace(',', ".")
+        .parse::<f64>()
+        .map_err(|_| ControlError::InvalidData)
+}
+
 pub(super) fn action(
     printer: &PrinterEntry,
     control: Control,
     value: &str,
 ) -> Result<MachineAction, ControlError> {
-    let number = || {
-        value
-            .trim()
-            .parse::<f64>()
-            .map_err(|_| ControlError::InvalidData)
-    };
     let integer = || {
         value
             .trim()
@@ -46,11 +48,7 @@ pub(super) fn action(
             MachineAction::SetPrintSpeedOverride { percent }
         }
         Control::ZOffset => {
-            let offset_mm = value
-                .trim()
-                .replace(',', ".")
-                .parse::<f64>()
-                .map_err(|_| ControlError::InvalidData)?;
+            let offset_mm = parse_decimal(value)?;
             let [min, max] = machine.z_offset_range_mm.ok_or(ControlError::Unsupported)?;
             if !(min..=max).contains(&offset_mm) {
                 return Err(ControlError::InvalidData);
@@ -78,15 +76,11 @@ pub(super) fn action(
         },
         Control::Move(axis) => MachineAction::MoveAxisRelative {
             axis,
-            distance_mm: number()?,
+            distance_mm: parse_decimal(value)?,
             speed_mm_s: None,
         },
         Control::Extrude(nozzle_id) => {
-            let length_mm = value
-                .trim()
-                .replace(',', ".")
-                .parse::<f64>()
-                .map_err(|_| ControlError::InvalidData)?;
+            let length_mm = parse_decimal(value)?;
             let limit = control_device(printer, nozzle_id)
                 .and_then(|device| device.extrusion_limit_mm)
                 .ok_or(ControlError::InvalidState)?;
