@@ -67,6 +67,16 @@ pub(crate) fn is_startup(args: impl IntoIterator<Item = OsString>) -> bool {
     args.into_iter().any(|arg| arg == OsStr::new("--startup"))
 }
 
+pub(crate) fn setup_startup_preference(args: impl IntoIterator<Item = OsString>) -> Option<bool> {
+    let mut args = args.into_iter();
+    let first = args.next()?;
+    match (first.to_str()?, args.next()) {
+        ("--setup-startup=window", None) => Some(false),
+        ("--setup-startup=background", None) => Some(true),
+        _ => None,
+    }
+}
+
 pub(crate) fn should_start_hidden(
     startup: bool,
     prefs: DesktopPreferences,
@@ -593,25 +603,35 @@ fn startup_command(exe: &Path) -> Result<Vec<u16>, String> {
 
 fn installed_command() -> Result<Vec<u16>, String> {
     let data = crate::config::default_data_directory().map_err(|e| e.to_string())?;
-    let installed = data
+    let programs = data
         .parent()
         .ok_or(t!("settings.desktop.errors.local_app_data").into_owned())?
-        .join("Programs")
-        .join("MakerCalc")
-        .join("makercalc.exe");
+        .join("Programs");
     let current = std::env::current_exe()
         .map_err(|_| t!("settings.desktop.errors.executable").into_owned())?;
-    let expected = installed
-        .canonicalize()
-        .map_err(|_| t!("settings.desktop.available_installed").into_owned())?;
+    startup_command_for_installation(&programs, &current)
+}
+
+fn startup_command_for_installation(programs: &Path, current: &Path) -> Result<Vec<u16>, String> {
     let actual = current
         .canonicalize()
         .map_err(|_| t!("settings.desktop.errors.verify_executable").into_owned())?;
-    // Compare canonical OS paths without a lossy UTF-8 conversion.
-    if actual != expected {
-        return Err(t!("settings.desktop.errors.installed_only").into_owned());
+    let mut found_installation = false;
+    // Inno Setup can keep the previous install directory when upgrading.
+    for directory in ["MakerCalc", "MakerCalcCloud"] {
+        let installed = programs.join(directory).join("makercalc.exe");
+        if let Ok(expected) = installed.canonicalize() {
+            if actual == expected {
+                return startup_command(&installed);
+            }
+            found_installation = true;
+        }
     }
-    startup_command(&installed)
+    if found_installation {
+        Err(t!("settings.desktop.errors.installed_only").into_owned())
+    } else {
+        Err(t!("settings.desktop.available_installed").into_owned())
+    }
 }
 
 fn registry_error(code: u32) -> String {
@@ -657,6 +677,22 @@ pub(crate) fn set_startup(enable: bool) -> Result<StartupView, String> {
     } else {
         None
     };
+    write_startup(command.as_deref())?;
+    read_startup()
+}
+
+pub(crate) fn configure_startup_from_setup(background: bool) -> Result<(), String> {
+    let command = installed_command()?;
+    let store = crate::config::ConfigStore::open_default().map_err(|error| error.to_string())?;
+    let mut config = store.load_or_empty().map_err(|error| error.to_string())?;
+    if config.desktop.start_in_background != background {
+        config.desktop.start_in_background = background;
+        store.save(&config).map_err(|error| error.to_string())?;
+    }
+    write_startup(Some(&command))
+}
+
+fn write_startup(command: Option<&[u16]>) -> Result<(), String> {
     let mut key: HKEY = null_mut();
     let status = unsafe {
         RegCreateKeyExW(
@@ -691,10 +727,10 @@ pub(crate) fn set_startup(enable: bool) -> Result<StartupView, String> {
     unsafe {
         RegCloseKey(key);
     }
-    if status != ERROR_SUCCESS && !(status == ERROR_FILE_NOT_FOUND && !enable) {
+    if status != ERROR_SUCCESS && !(status == ERROR_FILE_NOT_FOUND && command.is_none()) {
         return Err(registry_error(status));
     }
-    read_startup()
+    Ok(())
 }
 
 pub(crate) fn open_windows_startup_settings() -> Result<(), String> {

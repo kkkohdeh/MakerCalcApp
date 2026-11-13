@@ -83,6 +83,14 @@ fn init_windows_taskbar_identity() {
 }
 
 fn main() {
+    if let Some(background) = crate::desktop::setup_startup_preference(std::env::args_os().skip(1))
+    {
+        if let Err(error) = crate::desktop::configure_startup_from_setup(background) {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     let activation =
         match crate::desktop::notifications::activation_from_args(std::env::args_os().skip(1)) {
             Ok(activation) => activation,
@@ -153,7 +161,7 @@ fn main() {
             .result("failed")
             .detail(error),
         );
-        eprintln!("MakerCalc no pudo iniciar: {error}");
+        eprintln!("{}", t!("common.startup.failed", error = error));
         let _ = rfd::MessageDialog::new()
             .set_title("MakerCalc")
             .set_description(t!("common.startup.failed", error = error).into_owned())
@@ -184,7 +192,7 @@ fn run(
             Ok(res) => res,
             Err(error) => {
                 drop(guard);
-                return Err(t!("common.startup.failed", error = error).into_owned());
+                return Err(error.to_string());
             }
         };
     let shutdown = Rc::new(RefCell::new(AppShutdown {
