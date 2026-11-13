@@ -1,9 +1,12 @@
 //! Measured cards and readings in balanced, consecutive columns.
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, App, AvailableSpace, Bounds, Element, ElementId, GlobalElementId,
     InspectorElementId, IntoElement, LayoutId, ParentElement as _, Pixels, Point, Style,
     Styled as _, Window, div, point, px, size,
 };
+
+const MAX_TERMINAL_STRETCH: f32 = 96.;
 
 pub(super) struct Item {
     pub key: String,
@@ -207,6 +210,8 @@ impl Element for Flow {
         let mut heights = Vec::with_capacity(self.items.len());
         let mut heading_heights = Vec::with_capacity(self.items.len());
         let mut groups = std::collections::BTreeMap::new();
+        let board = matches!(self.mode, Mode::Board);
+        let stretch = board && self.columns > 1;
         for item in &mut self.items {
             let width = column_width;
             let available = size(
@@ -217,6 +222,7 @@ impl Element for Flow {
             item.content = div()
                 .w(px(width))
                 .min_w_0()
+                .when(stretch, |wrapper| wrapper.h_full())
                 .child(content)
                 .into_any_element();
             heights.push(
@@ -297,15 +303,31 @@ impl Element for Flow {
                 }
                 let bottom = y + heights[index];
                 height = height.max(bottom);
-                let trailing = if matches!(self.mode, Mode::Board) {
-                    self.gap
-                } else {
-                    0.
-                };
+                let trailing = if board { self.gap } else { 0. };
                 ends[column] = bottom + trailing;
                 (point(px(x), px(y)), heading_at)
             })
-            .collect();
+            .collect::<Vec<_>>();
+        if stretch {
+            for (index, (position, _)) in positions.iter().enumerate() {
+                if columns.get(index + 1) == columns.get(index) {
+                    continue;
+                }
+                let bottom = position.y.as_f32() + heights[index];
+                let extra = (height - bottom).clamp(0., MAX_TERMINAL_STRETCH);
+                if extra <= 0. {
+                    continue;
+                }
+                self.items[index].content.layout_as_root(
+                    size(
+                        AvailableSpace::Definite(px(column_width)),
+                        AvailableSpace::Definite(px(heights[index] + extra)),
+                    ),
+                    window,
+                    cx,
+                );
+            }
+        }
         let style = Style {
             size: size(px(self.width).into(), px(height).into()),
             flex_shrink: 0.,

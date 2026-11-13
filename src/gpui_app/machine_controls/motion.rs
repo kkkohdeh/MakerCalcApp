@@ -606,7 +606,7 @@ impl MakerCalcGpuiApp {
                                 session,
                                 epoch,
                                 value: controls.motion.speed_text(printer, cx),
-                                enabled: enabled && movement,
+                                enabled,
                                 draft: controls.motion.speed_draft.clone(),
                             })
                         },
@@ -784,11 +784,13 @@ impl MakerCalcGpuiApp {
             card::surface(false, cx)
                 .id("motion-controls")
                 .test_support()
+                .h_full()
                 .role(Role::Group)
                 .aria_label(t!("printers.motion.title").into_owned())
                 .child(card::header(false).child(header))
                 .child(
                     card::content(false)
+                        .flex_grow_1()
                         .text_sm()
                         .gap_3()
                         .child(position(printer, cx))

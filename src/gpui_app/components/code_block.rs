@@ -118,7 +118,7 @@ impl RenderOnce for CodeBlock {
                     })
                     .child(
                         div()
-                            .id((self.id, "content"))
+                            .id((self.id.clone(), "content"))
                             .test_support()
                             .min_w_0()
                             .w_full()
@@ -127,7 +127,7 @@ impl RenderOnce for CodeBlock {
                             .line_height(px(19.5))
                             .font_family(cx.theme().mono_font_family.clone())
                             .text_color(cx.theme().muted_foreground)
-                            .child(SelectableText::new("diagnostics-code", self.text)),
+                            .child(SelectableText::new((self.id, "text"), self.text)),
                     ),
             )
             .child(

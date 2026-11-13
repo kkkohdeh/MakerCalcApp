@@ -184,7 +184,7 @@ pub(super) fn log_connection_change(printer: &PrinterEntry, previous: LanConnect
     };
     let mut event = LogEvent::new(level, LogArea::Printer, code).result(result);
     if printer.state.last_error.is_some() {
-        event = event.detail("Error de conexión; detalle disponible en la interfaz");
+        event = event.detail("Connection error; details available in UI");
     }
     diagnostics::log(printer_log_context(event, printer.state.id, printer));
 }
@@ -206,7 +206,7 @@ pub(super) fn log_operation_state(printer: &PrinterEntry) {
             LogEvent::new(LogLevel::Error, LogArea::Action, "action.failed")
                 .action(action_key(*action))
                 .result("failed")
-                .detail("Operación rechazada; detalle disponible en la interfaz")
+                .detail("Operation rejected; details available in UI")
         }
         OperationState::Unknown(action) => {
             LogEvent::new(LogLevel::Warn, LogArea::Action, "action.unknown")

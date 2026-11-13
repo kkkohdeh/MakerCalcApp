@@ -132,6 +132,7 @@ impl RenderOnce for Calendar {
                     .size(px(28.))
                     .icon(IconName::ChevronLeft)
                     .accessibility_label(t!("common.calendar.previous_month").into_owned())
+                    .tooltip(t!("common.calendar.previous_month"))
                     .on_click(move |_, _, cx| {
                         previous.update(cx, |state, cx| {
                             state.prev_month();
@@ -215,6 +216,7 @@ impl RenderOnce for Calendar {
                     .size(px(28.))
                     .icon(IconName::ChevronRight)
                     .accessibility_label(t!("common.calendar.next_month").into_owned())
+                    .tooltip(t!("common.calendar.next_month"))
                     .on_click(move |_, _, cx| {
                         next.update(cx, |state, cx| {
                             state.next_month();

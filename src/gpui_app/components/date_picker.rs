@@ -112,6 +112,7 @@ impl RenderOnce for DatePicker {
                     .top(px(4.))
                     .disabled(disabled)
                     .accessibility_label(t!("common.actions.clear").into_owned())
+                    .tooltip(t!("common.actions.clear"))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(move |_, window, cx| {
                         reset.update(cx, |state, cx| {

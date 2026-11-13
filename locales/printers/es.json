@@ -594,7 +594,8 @@
       "enclosure_closed": "Cerramiento cerrado",
       "material_station_slots": "Posiciones de la estación de material",
       "printer_issue": "Problema de impresora",
-      "operation_step": "Paso de la operación"
+      "operation_step": "Paso de la operación",
+      "read_status_value": "Estado de lectura: %{status}"
     },
     "activity": {
       "heating": "Calentando",

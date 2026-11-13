@@ -350,11 +350,8 @@ impl MakerCalcGpuiApp {
                         (false, true) => (false, Some(s_trim.to_owned())),
                         (false, false) => (false, Some(format!("{s_trim}:{c_trim}"))),
                         (true, false) => {
-                            self.mutation_error = Some(
-                                t!("printers.form.errors.serial_required")
-                                    .into_owned()
-                                    .to_owned(),
-                            );
+                            self.mutation_error =
+                                Some(t!("printers.form.errors.serial_required").into_owned());
                             cx.notify();
                             return;
                         }
@@ -491,12 +488,10 @@ impl MakerCalcGpuiApp {
             t!("printers.form.search_title").into_owned()
         } else if editing {
             t!("printers.form.edit_title").into_owned()
+        } else if form.discovered.is_some() {
+            t!("printers.form.confirm_title").into_owned()
         } else {
-            if form.discovered.is_some() {
-                t!("printers.form.confirm_title").into_owned()
-            } else {
-                t!("printers.form.add_title").into_owned()
-            }
+            t!("printers.form.add_title").into_owned()
         };
         let protocol_index = match form.protocol {
             Protocol::Moonraker => 0,

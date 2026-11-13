@@ -161,6 +161,7 @@ impl RenderOnce for InputGroup {
                         .icon(IconName::Close)
                         .tab_stop(false)
                         .accessibility_label(t!("common.actions.clear").into_owned())
+                        .tooltip(t!("common.actions.clear"))
                         .on_click(move |_, window, cx| {
                             state.update(cx, |state, cx| {
                                 state.clean(window, cx);

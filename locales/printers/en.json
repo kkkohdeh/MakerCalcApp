@@ -594,7 +594,8 @@
       "enclosure_closed": "Enclosure closed",
       "material_station_slots": "Material station positions",
       "printer_issue": "Printer issue",
-      "operation_step": "Operation step"
+      "operation_step": "Operation step",
+      "read_status_value": "Read status: %{status}"
     },
     "activity": {
       "heating": "Heating",

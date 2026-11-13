@@ -411,7 +411,7 @@ pub(in crate::gpui_app::overview) fn render(
                     readings.status,
                     cx,
                 ))
-                .child(t!("printers.overview.read_status").into_owned() + ": " + &status),
+                .child(t!("printers.overview.read_status_value", status = status)),
         );
     }
     let mut items = Vec::with_capacity(readings.fields.len());

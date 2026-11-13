@@ -136,7 +136,6 @@ pub(super) fn gcode_preview_element(
     .into_any_element()
 }
 
-#[allow(dead_code)]
 pub(super) fn print_disabled_reason_with_locale(
     printer: &PrinterEntry,
     has_file: bool,
@@ -206,8 +205,9 @@ pub(super) fn files_panel(
     window: &mut Window,
     cx: &mut Context<MakerCalcGpuiApp>,
 ) -> AnyElement {
-    let controls_disabled = !printer.state.telemetry_ready || printer.operation_state.is_pending();
-    let can_print = printer.state.telemetry.print_state == PrintStatus::Idle && !controls_disabled;
+    let controls_disabled = printer.state.connection != LanConnection::Connected
+        || !printer.state.telemetry_ready
+        || printer.operation_state.is_pending();
     let files_status = printer.detail_state.files.status;
     let files = printer.detail_state.files.value.as_deref().unwrap_or(&[]);
     let query = files_search.read(cx).value();
@@ -421,11 +421,11 @@ pub(super) fn files_panel(
             })
             .unwrap_or(false);
 
-        let laminacion_section: AnyElement = if active_file.is_some() {
+        let slicing_section: AnyElement = if active_file.is_some() {
             let details_status = active_details_result
                 .map(|r| r.status)
                 .unwrap_or(ReadStatus::NotLoaded);
-            if is_loading || details_status == ReadStatus::Loading {
+            if is_loading {
                 div()
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
@@ -455,8 +455,7 @@ pub(super) fn files_panel(
                     &rust_i18n::t!("files.details.slicing.denied"),
                     cx,
                 )
-            } else if has_facts {
-                let facts = &active_details.unwrap().analysis;
+            } else if let Some(facts) = active_details.filter(|_| has_facts).map(|d| &d.analysis) {
                 let mut values = DescriptionList::horizontal()
                     .columns(1)
                     .bordered(false)
@@ -548,13 +547,7 @@ pub(super) fn files_panel(
             .primary()
             .w_full()
             .label(rust_i18n::t!("files.actions.print_file"))
-            .disabled(!can_print || print_target.is_none())
-            .when_some(disabled_reason.as_deref(), |btn, reason| {
-                btn.tooltip(rust_i18n::t!(
-                    "files.print.disabled.prefix",
-                    reason = reason
-                ))
-            })
+            .disabled(disabled_reason.is_some())
             .on_click(cx.listener(move |app, _, _, cx| {
                 if let Some((fid, fname)) = print_target.clone() {
                     app.request_start_print(printer_id, fid, fname, cx);
@@ -633,7 +626,7 @@ pub(super) fn files_panel(
                     ))
                     .child(metadata)
                     .child(separator::horizontal("file-preview-metadata-separator", cx))
-                    .child(laminacion_section),
+                    .child(slicing_section),
             )
             .child(card::footer(false, cx).child(print_action_block.flex_1()))
     };

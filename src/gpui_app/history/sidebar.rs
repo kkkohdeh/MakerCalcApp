@@ -216,9 +216,6 @@ impl MakerCalcGpuiApp {
                         .id("global-history-notice")
                         .test_support()
                         .text_xs()
-                        .when(sidebar.error.is_some(), |notice| {
-                            notice.text_color(cx.theme().danger)
-                        })
                         .child(notice),
                 )
             });
@@ -249,7 +246,6 @@ impl MakerCalcGpuiApp {
                     .spread()
                     .child(pagination::previous(
                         Button::new("global-history-previous")
-                            .tooltip(t!("history.previous"))
                             .disabled(sidebar.loading || offset == 0)
                             .on_click(cx.listener(move |app, _, _, cx| {
                                 app.load_global_history(
@@ -268,7 +264,6 @@ impl MakerCalcGpuiApp {
                     )
                     .child(pagination::next(
                         Button::new("global-history-next")
-                            .tooltip(t!("common.actions.next"))
                             .disabled(
                                 sidebar.loading || offset + HISTORY_PAGE_SIZE >= sidebar.page.total,
                             )

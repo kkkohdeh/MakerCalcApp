@@ -820,15 +820,7 @@ impl MakerCalcGpuiApp {
             .on_key_down(
                 cx.listener(|app, event: &gpui_kit::KeyDownEvent, window, cx| {
                     if event.keystroke.key == "escape" {
-                        if let Some(opener) = app
-                            .material_controls
-                            .editor
-                            .as_ref()
-                            .and_then(|e| e.opener.clone())
-                        {
-                            opener.focus(window, cx);
-                        }
-                        app.close_material_editor(cx);
+                        app.dismiss_material_editor(window, cx);
                         cx.stop_propagation();
                     }
                 }),

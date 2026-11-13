@@ -50,7 +50,9 @@ pub(in crate::gpui_app) fn previous(button: Button, icon_only: bool) -> Button {
         .accessibility_label(t!("history.pagination.previous").into_owned())
         .pl(px(6.))
         .pr(px(10.))
-        .when(icon_only, |button| button.w(px(34.)))
+        .when(icon_only, |button| {
+            button.w(px(34.)).tooltip(t!("history.pagination.previous"))
+        })
         .when(!icon_only, |button| {
             button.label(t!("history.previous").into_owned())
         })
@@ -62,6 +64,9 @@ pub(in crate::gpui_app) fn next(button: Button, icon_only: bool) -> Button {
         .accessibility_label(t!("history.pagination.next").into_owned())
         .pl(px(10.))
         .pr(px(6.))
+        .when(icon_only, |button| {
+            button.tooltip(t!("history.pagination.next"))
+        })
         .when(!icon_only, |button| {
             button.label(t!("common.actions.next").into_owned())
         })
