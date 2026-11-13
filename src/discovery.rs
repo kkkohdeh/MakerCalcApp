@@ -19,6 +19,7 @@ use tokio::{
 };
 
 use crate::config::Protocol;
+use crate::i18n::t;
 
 const MAX_CANDIDATES: usize = 256;
 const MAX_BODY: usize = 64 * 1024;
@@ -31,28 +32,42 @@ pub(crate) struct NetworkInterface {
     pub(crate) addresses: Vec<(IpAddr, u8)>,
 }
 
+fn is_lan_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => ip.is_private() || ip.is_link_local(),
+        IpAddr::V6(ip) => ip.is_unique_local() || ip.is_unicast_link_local(),
+    }
+}
+
+fn ipv4_mask(prefix: u8) -> Option<u32> {
+    (1..=32)
+        .contains(&prefix)
+        .then(|| u32::MAX << (32 - prefix))
+}
+
+fn same_subnet(local: IpAddr, prefix: u8, target: IpAddr) -> bool {
+    match (local, target) {
+        (IpAddr::V4(local), IpAddr::V4(target)) => {
+            let Some(mask) = ipv4_mask(prefix) else {
+                return false;
+            };
+            let value = u32::from(target);
+            (value & mask) == (u32::from(local) & mask)
+                && (prefix > 30 || (value != (value & mask) && value != (value | !mask)))
+        }
+        (IpAddr::V6(local), IpAddr::V6(target)) if (1..=128).contains(&prefix) => {
+            let mask = u128::MAX << (128 - prefix);
+            (u128::from(target) & mask) == (u128::from(local) & mask)
+        }
+        _ => false,
+    }
+}
+
 impl NetworkInterface {
     fn allows(&self, address: IpAddr) -> bool {
-        self.addresses
-            .iter()
-            .any(|&(local, prefix)| match (local, address) {
-                (IpAddr::V4(local), IpAddr::V4(ip)) if prefix <= 32 => {
-                    let mask = u32::MAX.checked_shl(u32::from(32 - prefix)).unwrap_or(0);
-                    let value = u32::from(ip);
-                    (local.is_private() || local.is_link_local())
-                        && (ip.is_private() || ip.is_link_local())
-                        && !ip.is_loopback()
-                        && (value & mask) == (u32::from(local) & mask)
-                        && (prefix > 30 || (value != (value & mask) && value != (value | !mask)))
-                }
-                (IpAddr::V6(local), IpAddr::V6(ip)) if prefix <= 128 => {
-                    let mask = u128::MAX.checked_shl(u32::from(128 - prefix)).unwrap_or(0);
-                    (local.is_unique_local() || local.is_unicast_link_local())
-                        && (ip.is_unique_local() || ip.is_unicast_link_local())
-                        && (u128::from(ip) & mask) == (u128::from(local) & mask)
-                }
-                _ => false,
-            })
+        self.addresses.iter().any(|&(local, prefix)| {
+            is_lan_ip(local) && is_lan_ip(address) && same_subnet(local, prefix, address)
+        })
     }
 
     pub(crate) fn default_range(&self) -> String {
@@ -68,7 +83,7 @@ impl NetworkInterface {
                 if !ip.is_private() && !ip.is_link_local() {
                     return None;
                 }
-                let mask = u32::MAX << (32 - prefix);
+                let mask = ipv4_mask(prefix)?;
                 let first = (u32::from(ip) & mask) + 1;
                 let last = (u32::from(ip) | !mask) - 1;
                 Some(format!(
@@ -83,16 +98,11 @@ impl NetworkInterface {
     fn source(&self, target: IpAddr) -> Option<IpAddr> {
         self.addresses
             .iter()
-            .find(|&&(local, prefix)| match (local, target) {
-                (IpAddr::V4(local), IpAddr::V4(target)) if prefix <= 32 => {
-                    let mask = u32::MAX.checked_shl(u32::from(32 - prefix)).unwrap_or(0);
-                    u32::from(local) & mask == u32::from(target) & mask
-                }
-                (IpAddr::V6(local), IpAddr::V6(target)) if prefix <= 128 => {
-                    let mask = u128::MAX.checked_shl(u32::from(128 - prefix)).unwrap_or(0);
-                    u128::from(local) & mask == u128::from(target) & mask
-                }
-                _ => false,
+            .find(|&&(local, prefix)| {
+                // Loopback-to-loopback supports local test batches; real adapters filter loopback.
+                ((is_lan_ip(local) && is_lan_ip(target))
+                    || (local.is_loopback() && target.is_loopback()))
+                    && same_subnet(local, prefix, target)
             })
             .map(|(ip, _)| *ip)
     }
@@ -120,7 +130,7 @@ pub(crate) struct Candidate {
     pub(crate) announced: bool,
     pub(crate) verification: Verification,
     pub(crate) local_address: Option<IpAddr>,
-    pub(crate) issue: Option<&'static str>,
+    pub(crate) issue: Option<String>,
 }
 
 impl Candidate {
@@ -135,15 +145,16 @@ impl Candidate {
                     == Some(self.address.ip()))
     }
 
-    pub(crate) fn caption(&self) -> &'static str {
+    pub(crate) fn caption(&self) -> String {
         match self.verification {
-            Verification::Compatible => "Compatible",
-            Verification::RequiresCredential => "Requiere credencial",
-            Verification::Unverified => "Sin verificar",
-            Verification::Certificate => "Certificado no válido",
-            Verification::Timeout => "Sin respuesta",
-            Verification::Unsupported => "No compatible (prefijo, modelo o IPv6 con zona)",
+            Verification::Compatible => t!("printers.discovery.status.compatible"),
+            Verification::RequiresCredential => t!("printers.discovery.status.requires_credential"),
+            Verification::Unverified => t!("printers.discovery.status.unverified"),
+            Verification::Certificate => t!("printers.discovery.status.certificate"),
+            Verification::Timeout => t!("printers.discovery.status.timeout"),
+            Verification::Unsupported => t!("printers.discovery.status.unsupported"),
         }
+        .into_owned()
     }
 }
 
@@ -208,18 +219,22 @@ pub(crate) fn valid_moonraker(body: &[u8]) -> bool {
 fn parse_range(interface: &NetworkInterface, value: &str) -> Result<(u32, u32), String> {
     let (first, last) = value
         .split_once('-')
-        .ok_or("Usa IP inicial - IP final (máximo 256)")?;
-    let first: Ipv4Addr = first.trim().parse().map_err(|_| "IP inicial no válida")?;
-    let last: Ipv4Addr = last.trim().parse().map_err(|_| "IP final no válida")?;
+        .ok_or_else(|| t!("printers.discovery.errors.range_format").into_owned())?;
+    let first: Ipv4Addr = first
+        .trim()
+        .parse()
+        .map_err(|_| t!("printers.discovery.errors.invalid_start_ip").into_owned())?;
+    let last: Ipv4Addr = last
+        .trim()
+        .parse()
+        .map_err(|_| t!("printers.discovery.errors.invalid_end_ip").into_owned())?;
     let (start, end) = (u32::from(first), u32::from(last));
     if start > end
         || end - start >= 256
         || !interface.allows(first.into())
         || !interface.allows(last.into())
     {
-        return Err(
-            "El rango debe estar en la interfaz elegida y tener como máximo 256 direcciones".into(),
-        );
+        return Err(t!("printers.discovery.errors.range_scope").into_owned());
     }
     Ok((start, end))
 }
@@ -301,12 +316,15 @@ impl DiscoveryView {
             *old = candidate;
         } else if self.candidates.len() < MAX_CANDIDATES {
             self.candidates.push(candidate);
-        } else if !self
-            .errors
-            .iter()
-            .any(|e| e == "Se alcanzó el límite de 256 candidatos")
-        {
-            self.error("Se alcanzó el límite de 256 candidatos");
+        } else {
+            let limit_error = t!(
+                "printers.discovery.errors.candidate_limit",
+                count = MAX_CANDIDATES
+            )
+            .into_owned();
+            if !self.errors.iter().any(|e| e == &limit_error) {
+                self.error(limit_error);
+            }
         }
     }
 }
@@ -348,7 +366,7 @@ impl DiscoveryHandle {
         self.runtime
             .spawn_blocking(native::interfaces)
             .await
-            .map_err(|_| "No se pudieron consultar las interfaces")?
+            .map_err(|_| t!("printers.discovery.errors.interfaces_query").into_owned())?
     }
 
     pub(crate) fn start(
@@ -397,11 +415,12 @@ async fn search_network(
     state: &mut DiscoveryView,
     sender: &watch::Sender<Arc<DiscoveryView>>,
 ) {
-    if !interface.addresses.iter().any(|(ip, _)| match ip {
-        IpAddr::V4(ip) => ip.is_private() || ip.is_link_local(),
-        IpAddr::V6(ip) => ip.is_unique_local() || ip.is_unicast_link_local(),
-    }) {
-        state.error("La interfaz no tiene una LAN privada/link-local; usa configuración manual");
+    if !interface
+        .addresses
+        .iter()
+        .any(|&(ip, prefix)| is_lan_ip(ip) && prefix > 0)
+    {
+        state.error(t!("printers.discovery.errors.no_private_lan"));
         return;
     }
     let retry = matches!(search, Search::Retry);
@@ -462,7 +481,7 @@ async fn search_network(
                                     Protocol::Moonraker
                                 },
                                 tls: port == 7130,
-                                name: "Servicio sin verificar".into(),
+                                name: t!("printers.discovery.unverified_service").into_owned(),
                                 serial: None,
                                 uuid: None,
                                 announced: false,
@@ -501,7 +520,7 @@ async fn check_batch(
         .filter_map(|&(ip, _)| make_client(ip, None, retry).ok())
         .collect::<Vec<_>>();
     if clients.is_empty() {
-        state.error("No se pudo preparar el cliente de red");
+        state.error(t!("printers.discovery.errors.client_setup"));
         return;
     }
     state.checked = 0;
@@ -532,7 +551,7 @@ async fn check_batch(
                 // Pending tasks keep their inputs separately below; never lose an unstarted target.
                 state.pending.extend(targets);
                 state.pending.append(&mut active);
-                state.error("Se agotó el tiempo; hay comprobaciones pendientes");
+                state.error(t!("printers.discovery.errors.timeout_pending"));
                 break;
             }
             _ = ticker.tick() => { sender.send_replace(Arc::new(state.clone())); }
@@ -544,7 +563,7 @@ async fn check_batch(
                         if candidate.verification == Verification::Timeout { state.pending.push(candidate.clone()); }
                         if reachable { state.insert(candidate); }
                     }
-                    _ => state.error("Falló una comprobación de red"),
+                    _ => state.error(t!("printers.discovery.errors.probe_failed")),
                 }
             }
         }
@@ -574,10 +593,10 @@ fn make_client(
 pub(crate) fn verification_client(candidate: &Candidate) -> Result<reqwest::Client, String> {
     let local = candidate
         .local_address
-        .ok_or("Falta la interfaz de origen")?;
+        .ok_or_else(|| t!("printers.discovery.errors.missing_source_interface").into_owned())?;
     make_client(local, Some((&candidate.host, candidate.address)), true)
         .map(|(_, c)| c)
-        .map_err(|_| "No se pudo preparar la conexión segura".into())
+        .map_err(|_| t!("printers.discovery.errors.tls_client_setup").into_owned())
 }
 
 pub(crate) fn endpoint_url(candidate: &Candidate, path: &str) -> Result<url::Url, String> {
@@ -586,21 +605,22 @@ pub(crate) fn endpoint_url(candidate: &Candidate, path: &str) -> Result<url::Url
     } else {
         "http://localhost"
     })
-    .map_err(|_| "Dirección no válida")?;
+    .map_err(|_| t!("printers.discovery.errors.invalid_address").into_owned())?;
     if let Ok(ip) = candidate.host.trim_matches(['[', ']']).parse::<IpAddr>() {
-        url.set_ip_host(ip).map_err(|_| "IP no válida")?;
+        url.set_ip_host(ip)
+            .map_err(|_| t!("printers.discovery.errors.invalid_ip").into_owned())?;
     } else {
         url.set_host(Some(&candidate.host))
-            .map_err(|_| "Host no válido")?;
+            .map_err(|_| t!("printers.discovery.errors.invalid_host").into_owned())?;
     }
     url.set_port(Some(candidate.address.port()))
-        .map_err(|_| "Puerto no válido")?;
+        .map_err(|_| t!("printers.discovery.errors.invalid_port").into_owned())?;
     match url.host() {
         Some(url::Host::Ipv4(ip)) if candidate.address.ip() != IpAddr::V4(ip) => {
-            return Err("El host anunciado no coincide con la IP aprobada".into());
+            return Err(t!("printers.discovery.errors.host_ip_mismatch").into_owned());
         }
         Some(url::Host::Ipv6(ip)) if candidate.address.ip() != IpAddr::V6(ip) => {
-            return Err("El host anunciado no coincide con la IP aprobada".into());
+            return Err(t!("printers.discovery.errors.host_ip_mismatch").into_owned());
         }
         _ => {}
     }
@@ -613,14 +633,15 @@ pub(crate) async fn bounded_body(response: reqwest::Response) -> Result<Vec<u8>,
         .content_length()
         .is_some_and(|n| n > MAX_BODY as u64)
     {
-        return Err("Respuesta mayor que 64 KiB".into());
+        return Err(t!("printers.discovery.errors.response_too_large").into_owned());
     }
     let mut body = Vec::new();
     let mut stream = response.bytes_stream();
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|_| "No se pudo leer la respuesta")?;
+        let chunk =
+            chunk.map_err(|_| t!("printers.discovery.errors.response_read").into_owned())?;
         if body.len() + chunk.len() > MAX_BODY {
-            return Err("Respuesta mayor que 64 KiB".into());
+            return Err(t!("printers.discovery.errors.response_too_large").into_owned());
         }
         body.extend_from_slice(&chunk);
     }
@@ -694,7 +715,9 @@ async fn check_candidate(
                     }
                     Ok(_) => Verification::Unverified,
                     Err(_) => {
-                        candidate.issue = Some("Respuesta ilegible o mayor que 64 KiB");
+                        candidate.issue = Some(
+                            t!("printers.discovery.errors.unreadable_or_too_large").into_owned(),
+                        );
                         Verification::Unverified
                     }
                 }
@@ -746,7 +769,7 @@ async fn announcements(
     let mut sockets = JoinSet::new();
     for &(ip, prefix) in &interface.addresses {
         if let IpAddr::V4(ip) = ip
-            && prefix <= 32
+            && (1..=32).contains(&prefix)
             && (ip.is_private() || ip.is_link_local())
         {
             sockets.spawn(flashforge_udp(ip, prefix, events.clone()));
@@ -770,7 +793,7 @@ async fn announcements(
                             match native::Query::resolve(interface.index, &name, events.clone(), overflow.clone()) {
                                 Ok(query) => resolves.push(query), Err(error) => state.error(error),
                             }
-                        } else { state.error("Hay anuncios pendientes; repite la búsqueda para completarlos"); }
+                        } else { state.error(t!("printers.discovery.errors.announcements_pending")); }
                     }
                 }
                 Some(NativeEvent::Candidate(mut candidate)) => {
@@ -779,13 +802,13 @@ async fn announcements(
                         state.insert(candidate);
                     }
                 }
-                Some(NativeEvent::Error) => state.error("Windows no pudo resolver un anuncio DNS-SD"),
+                Some(NativeEvent::Error) => state.error(t!("printers.discovery.errors.dnssd_resolve")),
                 None => break,
             }
         }
     }
     if overflow.load(Ordering::Relaxed) {
-        state.error("Demasiados anuncios; resultados parciales");
+        state.error(t!("printers.discovery.errors.too_many_announcements"));
     }
     // Dropping the guards cancels native queries, but Windows owns their context until the final callback.
     drop(browse);
@@ -806,20 +829,23 @@ async fn flashforge_udp(
     prefix: u8,
     events: mpsc::Sender<NativeEvent>,
 ) -> Result<(), String> {
+    let Some(mask) = ipv4_mask(prefix) else {
+        return Ok(());
+    };
     let socket = std::net::UdpSocket::bind((ip, 0))
-        .map_err(|_| "No se pudo abrir UDP en la interfaz elegida")?;
+        .map_err(|_| t!("printers.discovery.errors.udp_bind").into_owned())?;
     socket
         .set_nonblocking(true)
-        .map_err(|_| "No se pudo preparar UDP")?;
+        .map_err(|_| t!("printers.discovery.errors.udp_setup").into_owned())?;
     socket
         .set_broadcast(true)
-        .map_err(|_| "No se pudo habilitar broadcast")?;
+        .map_err(|_| t!("printers.discovery.errors.udp_broadcast").into_owned())?;
     socket
         .set_multicast_ttl_v4(1)
-        .map_err(|_| "No se pudo limitar el alcance multicast")?;
+        .map_err(|_| t!("printers.discovery.errors.udp_multicast_ttl").into_owned())?;
     native::multicast_interface(&socket, ip)?;
-    let socket = UdpSocket::from_std(socket).map_err(|_| "No se pudo preparar UDP")?;
-    let mask = u32::MAX.checked_shl(u32::from(32 - prefix)).unwrap_or(0);
+    let socket = UdpSocket::from_std(socket)
+        .map_err(|_| t!("printers.discovery.errors.udp_setup").into_owned())?;
     let broadcast = Ipv4Addr::from(u32::from(ip) | !mask);
     let deadline = Instant::now() + Duration::from_secs(6);
     let mut round = tokio::time::interval(Duration::from_secs(1));
@@ -833,13 +859,16 @@ async fn flashforge_udp(
                 rounds += 1;
                 let broadcast_result = socket.send_to(&[], (broadcast, 48899)).await;
                 let multicast_result = socket.send_to(&[], (Ipv4Addr::new(225, 0, 0, 9), 19000)).await;
-                if broadcast_result.is_err() && multicast_result.is_err() { return Err("No se pudieron enviar las sondas UDP".into()); }
+                if broadcast_result.is_err() && multicast_result.is_err() {
+                    return Err(t!("printers.discovery.errors.udp_send").into_owned());
+                }
             }
             received = socket.recv_from(&mut buffer) => {
-                let (size, address) = received.map_err(|_| "Falló la recepción UDP")?;
+                let (size, address) =
+                    received.map_err(|_| t!("printers.discovery.errors.udp_recv").into_owned())?;
                 if size <= 2048 && let Some(candidate) = parse_flashforge(&buffer[..size], address)
                     && events.try_send(NativeEvent::Candidate(candidate)).is_err() {
-                    return Err("Demasiadas respuestas UDP; resultados parciales".into());
+                    return Err(t!("printers.discovery.errors.udp_overflow").into_owned());
                 }
             }
         }

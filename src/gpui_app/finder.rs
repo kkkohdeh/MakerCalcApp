@@ -715,7 +715,7 @@ impl MakerCalcGpuiApp {
                                                 candidate.caption(),
                                                 if candidate.tls { " · HTTPS" } else { "" }
                                             )))
-                                            .when_some(candidate.issue, |row, issue| {
+                                            .when_some(candidate.issue.clone(), |row, issue| {
                                                 row.child(
                                                     item::description(cx)
                                                         .text_color(cx.theme().red)
@@ -725,7 +725,7 @@ impl MakerCalcGpuiApp {
                                     )
                                     .outline()
                                     .disabled(disabled)
-                                    .tooltip(format!("{} · {}", candidate.name, candidate.address))
+                                    .tooltip(candidate.name.clone())
                                 })),
                         ),
                 )

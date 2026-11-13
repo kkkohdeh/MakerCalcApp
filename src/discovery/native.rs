@@ -1,4 +1,5 @@
 use super::*;
+use crate::i18n::t;
 use std::{ffi::c_void, os::windows::io::AsRawSocket};
 use windows_sys::Win32::{
     Foundation::{DNS_REQUEST_PENDING, ERROR_BUFFER_OVERFLOW, ERROR_CANCELLED},
@@ -29,7 +30,7 @@ pub(super) fn interfaces() -> Result<Vec<NetworkInterface>, String> {
             continue;
         }
         if result != 0 {
-            return Err("Windows no pudo listar las interfaces de red".into());
+            return Err(t!("printers.discovery.errors.interfaces_list").into_owned());
         }
         let mut entries = Vec::new();
         let mut next = first;
@@ -91,8 +92,9 @@ pub(super) fn interfaces() -> Result<Vec<NetworkInterface>, String> {
                 if !addresses.is_empty() && index != 0 {
                     entries.push(NetworkInterface {
                         index,
-                        name: wide(adapter.FriendlyName)
-                            .unwrap_or_else(|| "Interfaz de red".into()),
+                        name: wide(adapter.FriendlyName).unwrap_or_else(|| {
+                            t!("printers.discovery.network_interface").into_owned()
+                        }),
                         addresses,
                     });
                 }
@@ -100,7 +102,7 @@ pub(super) fn interfaces() -> Result<Vec<NetworkInterface>, String> {
         }
         return Ok(entries);
     }
-    Err("La lista de interfaces excede el límite seguro".into())
+    Err(t!("printers.discovery.errors.interfaces_limit").into_owned())
 }
 
 pub(super) fn multicast_interface(
@@ -121,7 +123,7 @@ pub(super) fn multicast_interface(
     if result == 0 {
         Ok(())
     } else {
-        Err("No se pudo fijar la interfaz multicast".into())
+        Err(t!("printers.discovery.errors.multicast_interface").into_owned())
     }
 }
 
@@ -205,7 +207,7 @@ impl Query {
                 unsafe {
                     drop(Arc::from_raw(context));
                 }
-                return Err("No se pudo preparar DNS-SD".into());
+                return Err(t!("printers.discovery.errors.dnssd_setup").into_owned());
             };
             let name = storage.name.as_ptr();
             storage.request = Some(if browse {
@@ -245,7 +247,7 @@ impl Query {
             unsafe {
                 drop(Arc::from_raw(context));
             }
-            return Err("DNS-SD no está disponible en esta interfaz".into());
+            return Err(t!("printers.discovery.errors.dnssd_unavailable").into_owned());
         }
         Ok(Self { state, browse })
     }

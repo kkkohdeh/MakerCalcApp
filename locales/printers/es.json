@@ -768,6 +768,55 @@
       "missing_file_material": "FlashForge no informó el material lógico del archivo",
       "invalid_file_material_color": "FlashForge no informó un color válido para el material lógico",
       "invalid_supply_color": "FlashForge no informó un color válido para el suministro"
+    },
+    "discovery": {
+      "unverified_service": "Servicio sin verificar",
+      "network_interface": "Interfaz de red",
+      "status": {
+        "compatible": "Compatible",
+        "requires_credential": "Requiere credencial",
+        "unverified": "Sin verificar",
+        "certificate": "Certificado no válido",
+        "timeout": "Sin respuesta",
+        "unsupported": "No compatible (prefijo, modelo o IPv6 con zona)"
+      },
+      "errors": {
+        "announcements_pending": "Hay anuncios pendientes; repite la búsqueda para completarlos",
+        "candidate_limit": "Se alcanzó el límite de %{count} candidatos",
+        "client_setup": "No se pudo preparar el cliente de red",
+        "dnssd_resolve": "Windows no pudo resolver un anuncio DNS-SD",
+        "dnssd_setup": "No se pudo preparar DNS-SD",
+        "dnssd_unavailable": "DNS-SD no está disponible en esta interfaz",
+        "host_ip_mismatch": "El host anunciado no coincide con la IP aprobada",
+        "interfaces_limit": "La lista de interfaces excede el límite seguro",
+        "interfaces_list": "Windows no pudo listar las interfaces de red",
+        "interfaces_query": "No se pudieron consultar las interfaces",
+        "invalid_address": "Dirección no válida",
+        "invalid_end_ip": "IP final no válida",
+        "invalid_host": "Host no válido",
+        "invalid_ip": "IP no válida",
+        "invalid_port": "Puerto no válido",
+        "invalid_start_ip": "IP inicial no válida",
+        "missing_source_interface": "Falta la interfaz de origen",
+        "multicast_interface": "No se pudo fijar la interfaz multicast",
+        "no_private_lan": "La interfaz no tiene una LAN privada/link-local; usa configuración manual",
+        "probe_failed": "Falló una comprobación de red",
+        "range_format": "Usa IP inicial - IP final (máximo 256)",
+        "range_scope": "El rango debe estar en la interfaz elegida y tener como máximo 256 direcciones",
+        "response_read": "No se pudo leer la respuesta",
+        "response_too_large": "Respuesta mayor que 64 KiB",
+        "timeout_pending": "Se agotó el tiempo; hay comprobaciones pendientes",
+        "tls_client_setup": "No se pudo preparar la conexión segura",
+        "too_many_announcements": "Demasiados anuncios; resultados parciales",
+        "udp_bind": "No se pudo abrir UDP en la interfaz elegida",
+        "udp_broadcast": "No se pudo habilitar broadcast",
+        "udp_multicast_ttl": "No se pudo limitar el alcance multicast",
+        "udp_overflow": "Demasiadas respuestas UDP; resultados parciales",
+        "udp_recv": "Falló la recepción UDP",
+        "udp_send": "No se pudieron enviar las sondas UDP",
+        "udp_setup": "No se pudo preparar UDP",
+        "unreadable_or_too_large": "Respuesta ilegible o mayor que 64 KiB"
+      }
     }
   }
 }

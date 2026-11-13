@@ -768,6 +768,55 @@
       "missing_file_material": "FlashForge did not report the logical material for the file",
       "invalid_file_material_color": "FlashForge did not report a valid color for the logical material",
       "invalid_supply_color": "FlashForge did not report a valid color for the material supply"
+    },
+    "discovery": {
+      "unverified_service": "Unverified service",
+      "network_interface": "Network interface",
+      "status": {
+        "compatible": "Compatible",
+        "requires_credential": "Requires credential",
+        "unverified": "Unverified",
+        "certificate": "Invalid certificate",
+        "timeout": "No response",
+        "unsupported": "Incompatible (prefix, model, or scoped IPv6)"
+      },
+      "errors": {
+        "announcements_pending": "Announcements are still pending; repeat the search to finish",
+        "candidate_limit": "Reached the limit of %{count} candidates",
+        "client_setup": "Could not initialize network client",
+        "dnssd_resolve": "Windows could not resolve a DNS-SD announcement",
+        "dnssd_setup": "Could not initialize DNS-SD",
+        "dnssd_unavailable": "DNS-SD is not available on this interface",
+        "host_ip_mismatch": "Advertised host does not match the approved IP",
+        "interfaces_limit": "Interface list exceeds the safe limit",
+        "interfaces_list": "Windows could not list network interfaces",
+        "interfaces_query": "Could not query network interfaces",
+        "invalid_address": "Invalid address",
+        "invalid_end_ip": "Invalid end IP",
+        "invalid_host": "Invalid host",
+        "invalid_ip": "Invalid IP address",
+        "invalid_port": "Invalid port",
+        "invalid_start_ip": "Invalid start IP",
+        "missing_source_interface": "Missing source interface",
+        "multicast_interface": "Could not set the multicast interface",
+        "no_private_lan": "The interface has no private or link-local LAN address; use manual setup",
+        "probe_failed": "A network check failed",
+        "range_format": "Use Start IP - End IP (maximum 256)",
+        "range_scope": "The range must be within the selected interface and include at most 256 addresses",
+        "response_read": "Could not read the response",
+        "response_too_large": "Response exceeds 64 KiB",
+        "timeout_pending": "Search timed out; checks are still pending",
+        "tls_client_setup": "Could not prepare secure connection",
+        "too_many_announcements": "Too many announcements; partial results",
+        "udp_bind": "Could not open UDP on the selected interface",
+        "udp_broadcast": "Could not enable UDP broadcast",
+        "udp_multicast_ttl": "Could not limit UDP multicast scope",
+        "udp_overflow": "Too many UDP responses; partial results",
+        "udp_recv": "UDP receive failed",
+        "udp_send": "Could not send UDP probes",
+        "udp_setup": "Could not configure UDP",
+        "unreadable_or_too_large": "Unreadable response or exceeds 64 KiB"
+      }
     }
   }
 }
