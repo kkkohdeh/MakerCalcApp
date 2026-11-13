@@ -90,10 +90,7 @@ impl Projection {
                 .printer_alerts
                 .as_ref()
                 .is_some_and(|alerts| !alerts.is_empty())
-            && matches!(
-                self.status.as_deref(),
-                Some("ready" | "idle" | "busy" | "heating")
-            )
+            && status_load_active(self.status.as_deref())
             && self
                 .current_slot
                 .is_some_and(|slot| slot == 0 || source.is_some_and(|s| slot == s.reading.id.0));

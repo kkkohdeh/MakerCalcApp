@@ -112,6 +112,10 @@
     },
     "search": {
       "placeholder": "Search G-code files…"
+    },
+    "flashforge": {
+      "not_found": "File not found on the printer",
+      "not_in_catalog": "The selected file is no longer in the local catalog"
     }
   }
 }

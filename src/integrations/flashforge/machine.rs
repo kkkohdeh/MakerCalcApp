@@ -71,9 +71,26 @@ impl Default for PollDetails {
     }
 }
 
+fn status_matches(status: Option<&str>, expected: &[&str]) -> bool {
+    status.map(str::trim).is_some_and(|raw| {
+        expected
+            .iter()
+            .any(|candidate| raw.eq_ignore_ascii_case(candidate))
+    })
+}
+
+fn status_idle(status: Option<&str>) -> bool {
+    status_matches(status, &["ready", "idle"])
+}
+
+fn status_load_active(status: Option<&str>) -> bool {
+    status_matches(status, &["ready", "idle", "busy", "heating"])
+}
+
 impl PollDetails {
     fn motion_idle(&self) -> Option<bool> {
-        if !matches!(self.detail.status.as_deref()?, "ready" | "idle")
+        let detail_status = self.detail.status.as_deref()?;
+        if !status_idle(Some(detail_status))
             || matches!(
                 self.observation.status,
                 Some(PrintStatus::Printing | PrintStatus::Paused)
@@ -787,10 +804,7 @@ impl Projection {
             {
                 SupplyOperationPhase::Cancelling
             }
-            Some(0)
-                if station.state_step == Some(6)
-                    && matches!(self.status.as_deref(), Some("ready" | "idle")) =>
-            {
+            Some(0) if station.state_step == Some(6) && status_idle(self.status.as_deref()) => {
                 SupplyOperationPhase::Completed
             }
             _ => {
@@ -837,7 +851,7 @@ impl Projection {
                 _ => Some(SupplyBlock::Unknown),
             };
         }
-        if !matches!(self.status.as_deref(), Some("ready" | "idle")) {
+        if !status_idle(self.status.as_deref()) {
             return Some(SupplyBlock::NotIdle);
         }
         if matches!(self.station_action, Some(1..=3))

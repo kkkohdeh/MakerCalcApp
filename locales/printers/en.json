@@ -752,6 +752,11 @@
         "control_unavailable": "This action is unavailable in the current printer state.",
         "control_rejected": "The printer rejected the command."
       }
+    },
+    "flashforge": {
+      "not_idle_confirm": "Printer is not ready (must be idle; remove the previous print and confirm on its screen)",
+      "light_unsupported": "FlashForge does not expose this light over its local API",
+      "light_state_unknown": "FlashForge did not report the current light state"
     }
   }
 }

@@ -752,6 +752,11 @@
         "control_unavailable": "Esta acción no está disponible en el estado actual de la impresora.",
         "control_rejected": "La impresora rechazó la orden."
       }
+    },
+    "flashforge": {
+      "not_idle_confirm": "La impresora no está lista (debe estar en espera; retira la pieza previa y confirma en su pantalla)",
+      "light_unsupported": "FlashForge no expone esa luz por su API local",
+      "light_state_unknown": "FlashForge no informó el estado actual de la luz"
     }
   }
 }

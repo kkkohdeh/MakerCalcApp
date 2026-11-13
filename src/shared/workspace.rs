@@ -595,7 +595,8 @@ impl OperationHandle {
         if !self.state.borrow().allows_actions() {
             return Err(ControlError::Unsupported);
         }
-        if self.state.borrow().is_pending() {
+        if self.state.borrow().is_pending() || self.actions.capacity() < self.actions.max_capacity()
+        {
             return Err(ControlError::Busy);
         }
         let (reply, result) = oneshot::channel();

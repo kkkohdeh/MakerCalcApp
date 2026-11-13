@@ -1234,6 +1234,36 @@ async fn fetch_tcp_gcode_list(host: &str) -> Option<Vec<String>> {
     if files.is_empty() { None } else { Some(files) }
 }
 
+fn drain_queued_operations(operation_io: &mut OperationIo) {
+    while let Ok(queued) = operation_io.machine_actions.try_recv() {
+        let _ = queued
+            .reply
+            .send(crate::shared::control::ControlResult::Rejected(
+                crate::shared::control::ControlError::Busy,
+            ));
+    }
+    let machine_sending = matches!(
+        *operation_io.state.borrow(),
+        OperationState::Sending(PrinterActionKind::MachineControl)
+    );
+    while let Ok(queued) = operation_io.actions.try_recv() {
+        if !machine_sending {
+            let _ = operation_io.state.send_replace(OperationState::Rejected {
+                action: queued.kind(),
+                message: crate::i18n::t!("common.errors.operation_busy").into_owned(),
+            });
+        }
+    }
+}
+
+fn fresh_connected_telemetry(state: &PrinterState) -> bool {
+    state.connection == LanConnection::Connected
+        && state.telemetry_ready
+        && state
+            .age_ms(Instant::now())
+            .is_some_and(|age| age <= 15_000)
+}
+
 /// Runs the FlashForge detail request handler task.
 ///
 /// Dispatches `DetailIo` requests (such as `ListFiles` and `InspectFile`)
@@ -1299,6 +1329,7 @@ async fn run_detail_handler(
                     current_state.machine = Default::default();
                     current_state.devices.clear();
                     current_state.cameras = ReadResult::default();
+                    current_state.temperature_targets.clear();
                 }
                 let active = *detail_io.active.borrow();
                 let live = connected && active;
@@ -1349,12 +1380,19 @@ async fn run_detail_handler(
                             result = machine::dispatch(&client, &url, &serial_number, &check_code, payload) => result,
                         };
                         last_operation_finished = Some(Instant::now());
-                        machine.dispatched(Instant::now());
+                        if matches!(
+                            result,
+                            crate::shared::control::ControlResult::Accepted
+                                | crate::shared::control::ControlResult::Unknown
+                        ) {
+                            machine.dispatched(Instant::now());
+                            operation_io
+                                .state
+                                .send_replace(OperationState::Sending(PrinterActionKind::MachineControl));
+                        }
                         machine.refresh_supply_controls(&mut current_state);
                         let _ = reply.send(result);
-                        while let Ok(queued) = operation_io.machine_actions.try_recv() {
-                            let _ = queued.reply.send(crate::shared::control::ControlResult::Rejected(crate::shared::control::ControlError::Busy));
-                        }
+                        drain_queued_operations(&mut operation_io);
                     }
                     current_state.revision = current_state.revision.saturating_add(1);
                     let _ = detail_io.state.send_replace(Arc::new(current_state.clone()));
@@ -1449,7 +1487,8 @@ async fn run_detail_handler(
                             None => {
                                 let entry = current_state.file_details.entry(id).or_default();
                                 entry.status = ReadStatus::Error;
-                                entry.error = Some("Archivo no encontrado en la impresora".to_owned());
+                                entry.error =
+                                    Some(crate::i18n::t!("files.flashforge.not_found").into_owned());
                                 current_state.revision = current_state.revision.saturating_add(1);
                                 let _ = detail_io.state.send_replace(Arc::new(current_state.clone()));
                                 continue;
@@ -1545,9 +1584,6 @@ async fn run_detail_handler(
                     Some(supply_id) => machine.payload(&crate::shared::control::MachineAction::UnloadFilament { supply_id }, &state_receiver.borrow(), &current_state, command.connection_epoch).map(Some),
                     None => Ok(payload),
                 });
-                if matches!(command.action, crate::shared::control::MachineAction::CancelFilamentOperation { .. }) {
-                    machine.abort_load(ControlResult::Unknown);
-                }
                 let dispatch_started = Instant::now();
                 let result = match validation {
                     Err(error) => ControlResult::Rejected(error),
@@ -1572,6 +1608,9 @@ async fn run_detail_handler(
                         };
                         last_operation_finished = Some(Instant::now());
                         if matches!(result, ControlResult::Accepted | ControlResult::Unknown) {
+                            if matches!(command.action, crate::shared::control::MachineAction::CancelFilamentOperation { .. }) {
+                                machine.abort_load(ControlResult::Unknown);
+                            }
                             machine.dispatched(Instant::now());
                             pending_motion = matches!(command.action, crate::shared::control::MachineAction::HomeAxes { .. } | crate::shared::control::MachineAction::MoveAxisRelative { .. });
                             operation_io.state.send_replace(OperationState::Sending(PrinterActionKind::MachineControl));
@@ -1583,12 +1622,7 @@ async fn run_detail_handler(
                             current_state.revision = current_state.revision.saturating_add(1);
                             detail_io.state.send_replace(Arc::new(current_state.clone()));
                         }
-                        while let Ok(queued) = operation_io.machine_actions.try_recv() {
-                            let _ = queued.reply.send(ControlResult::Rejected(ControlError::Busy));
-                        }
-                        while let Ok(queued) = operation_io.actions.try_recv() {
-                            operation_io.state.send_replace(OperationState::Rejected { action: queued.kind(), message: crate::i18n::t!("common.errors.operation_busy").into_owned() });
-                        }
+                        drain_queued_operations(&mut operation_io);
                         result
                     }
                 };
@@ -1616,6 +1650,9 @@ async fn run_detail_handler(
                 let Some(action) = action_opt else {
                     break;
                 };
+                if operation_io.state.borrow().is_pending() {
+                    continue;
+                }
                 if machine.waiting_for_observation() || machine.load_deadline().is_some() {
                     operation_io.state.send_replace(OperationState::Rejected { action: action.kind(), message: crate::i18n::t!("common.errors.operation_busy").into_owned() });
                     continue;
@@ -1647,18 +1684,28 @@ async fn run_detail_handler(
                             });
                             continue;
                         }
+                        if !fresh_connected_telemetry(&state_receiver.borrow()) {
+                            let _ = operation_io.state.send_replace(OperationState::Rejected {
+                                action: PrinterActionKind::StartPrint,
+                                message: crate::i18n::t!("printers.actions.state_changed")
+                                    .into_owned(),
+                            });
+                            continue;
+                        }
                         let current_status = state_receiver.borrow().telemetry.print_state;
                         if current_status != PrintStatus::Idle {
                             let _ = operation_io.state.send_replace(OperationState::Rejected {
                                 action: PrinterActionKind::StartPrint,
-                                message: "La impresora no está lista (debe estar en espera; retira la pieza previa y confirma en su pantalla)".to_owned(),
+                                message: crate::i18n::t!("printers.flashforge.not_idle_confirm")
+                                    .into_owned(),
                             });
                             continue;
                         }
                         let Some((filename, detail_entry)) = catalog.get(&file_id) else {
                             let _ = operation_io.state.send_replace(OperationState::Rejected {
                                 action: PrinterActionKind::StartPrint,
-                                message: "El archivo seleccionado no se encuentra en el catálogo local".to_owned(),
+                                message: crate::i18n::t!("files.flashforge.not_in_catalog")
+                                    .into_owned(),
                             });
                             continue;
                         };
@@ -1783,7 +1830,16 @@ async fn run_detail_handler(
                         if role != LightRole::BuildArea {
                             let _ = operation_io.state.send_replace(OperationState::Rejected {
                                 action: kind,
-                                message: "FlashForge no expone esa luz por su API local".to_owned(),
+                                message: crate::i18n::t!("printers.flashforge.light_unsupported")
+                                    .into_owned(),
+                            });
+                            continue;
+                        }
+                        if !fresh_connected_telemetry(&state_receiver.borrow()) {
+                            let _ = operation_io.state.send_replace(OperationState::Rejected {
+                                action: kind,
+                                message: crate::i18n::t!("printers.actions.state_changed")
+                                    .into_owned(),
                             });
                             continue;
                         }
@@ -1797,8 +1853,10 @@ async fn run_detail_handler(
                         else {
                             let _ = operation_io.state.send_replace(OperationState::Rejected {
                                 action: kind,
-                                message: "FlashForge no informó el estado actual de la luz"
-                                    .to_owned(),
+                                message: crate::i18n::t!(
+                                    "printers.flashforge.light_state_unknown"
+                                )
+                                .into_owned(),
                             });
                             continue;
                         };
