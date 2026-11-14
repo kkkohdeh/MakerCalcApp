@@ -31,7 +31,7 @@
 ## Download
 
 <p>
-  <a href="https://github.com/kkkohdeh/MakerCalcApp/releases/download/v0.0.7/MakerCalc-Setup.exe"><img src="https://img.shields.io/badge/Download-MakerCalc%20for%20Windows-111827?style=for-the-badge" alt="Download MakerCalc for Windows"></a>
+  <a href="https://github.com/kkkohdeh/MakerCalcApp/releases/latest/download/MakerCalc-Setup.exe"><img src="https://img.shields.io/badge/Download-MakerCalc%20for%20Windows-111827?style=for-the-badge" alt="Download MakerCalc for Windows"></a>
 </p>
 
 Windows 10 (version 1903 or later) or Windows 11, 64-bit. Release notes for every version are on the [Releases](https://github.com/kkkohdeh/MakerCalcApp/releases) page.
@@ -117,7 +117,7 @@ flowchart LR
 
 ## Install
 
-1. Download [`MakerCalc-Setup.exe`](https://github.com/kkkohdeh/MakerCalcApp/releases/download/v0.0.7/MakerCalc-Setup.exe).
+1. Download [`MakerCalc-Setup.exe`](https://github.com/kkkohdeh/MakerCalcApp/releases/latest/download/MakerCalc-Setup.exe).
 2. Run it. It installs for your user only and doesn't ask for administrator rights.
 3. The installer isn't digitally signed yet, so Windows may show *"Windows protected your PC"*. Click **More info → Run anyway**. Only download MakerCalc from this page.
 
