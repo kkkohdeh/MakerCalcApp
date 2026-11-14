@@ -160,6 +160,9 @@ pub(crate) struct MakerCalcGpuiApp {
     pub(super) desktop_window: Option<crate::desktop::DesktopWindow>,
     pub(super) visual_active: bool,
     pub(super) printers: BTreeMap<LocalPrinterId, PrinterEntry>,
+    pub(super) bay_order: Vec<LocalPrinterId>,
+    pub(super) bay_dragging: Option<LocalPrinterId>,
+    pub(super) bay_hovered: Option<LocalPrinterId>,
     pub(super) selected: Option<LocalPrinterId>,
     pub(super) selected_file: Option<ResourceId>,
     pub(super) detail_tab: DetailTab,
@@ -280,6 +283,14 @@ impl Render for MakerCalcGpuiApp {
         v_flex()
             .size_full()
             .relative()
+            .on_key_down(
+                cx.listener(|app, event: &gpui_kit::KeyDownEvent, window, cx| {
+                    if event.keystroke.key == "escape" && app.bay_dragging.is_some() {
+                        cx.stop_active_drag(window);
+                        cx.stop_propagation();
+                    }
+                }),
+            )
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .child(self.render_title_bar(window, cx))

@@ -117,7 +117,7 @@ impl MakerCalcGpuiApp {
 
     pub(in crate::gpui_app) fn render_bay_with_history(
         &self,
-        window: &Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let width = window.viewport_size().width.as_f32();
@@ -129,7 +129,7 @@ impl MakerCalcGpuiApp {
             width
         };
         let columns = bay_columns(bay_width).min(self.printers.len().max(1));
-        let bay = self.render_bay(columns, cx);
+        let bay = self.render_bay(columns, window, cx);
         let body = div()
             .id("bay-history-layout")
             .test_support()

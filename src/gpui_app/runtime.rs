@@ -36,6 +36,9 @@ impl MakerCalcGpuiApp {
             desktop_window: None,
             visual_active: window.is_visible(),
             printers: BTreeMap::new(),
+            bay_order: Vec::new(),
+            bay_dragging: None,
+            bay_hovered: None,
             selected: None,
             selected_file: None,
             detail_tab: DetailTab::Overview,
@@ -231,6 +234,10 @@ impl MakerCalcGpuiApp {
         printers: Vec<UiPrinterReceiver>,
         cx: &mut Context<Self>,
     ) {
+        super::bay::reconcile_order(
+            &mut self.bay_order,
+            printers.iter().map(|printer| printer.id),
+        );
         for printer in self.printers.values() {
             let _ = printer.detail.active.send(false);
         }

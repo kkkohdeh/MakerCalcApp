@@ -4,13 +4,15 @@ use super::components::progress::Progress;
 use super::components::scroll_area::ScrollAreaExt as _;
 use super::components::tooltip::TooltipExt as _;
 use crate::i18n::t;
+use gpui_kit::base::motion::{Easing, Transition, transition};
 use gpui_kit::base::{StyledExt as _, TestSupportExt as _};
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme as _, Icon, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, App, Context, Hsla, InteractiveElement as _, IntoElement, ParentElement as _,
-    StatefulInteractiveElement as _, Styled as _, div, px, rems, rgb,
+    AnyElement, App, BoxShadow, Context, CursorStyle, Hsla, InteractiveElement as _, IntoElement,
+    ParentElement as _, Render, StatefulInteractiveElement as _, Styled as _, WeakEntity, Window,
+    div, point, px, rems, rgb,
 };
 
 use crate::config::Protocol;
@@ -31,6 +33,66 @@ pub(super) use web_icons::SPEED as SPEED_ICON;
 pub(super) const FAN_ICON: &[u8] = web_icons::FAN;
 
 const BAY_CARD_WIDTH: f32 = 560.;
+
+pub(super) fn reconcile_order(
+    order: &mut Vec<LocalPrinterId>,
+    ids: impl Iterator<Item = LocalPrinterId>,
+) {
+    let ids: Vec<_> = ids.collect();
+    order.retain(|id| ids.contains(id));
+    for id in ids {
+        if !order.contains(&id) {
+            order.push(id);
+        }
+    }
+}
+
+#[derive(Clone)]
+struct BayDrag {
+    id: LocalPrinterId,
+    owner: WeakEntity<MakerCalcGpuiApp>,
+}
+
+impl BayDrag {
+    fn start(&self, cx: &mut App) -> gpui_kit::Entity<Self> {
+        use gpui_kit::AppContext as _;
+
+        let _ = self.owner.update(cx, |app, cx| {
+            app.bay_dragging = Some(self.id);
+            cx.notify();
+        });
+        cx.new(|cx| {
+            let owner = self.owner.clone();
+            let id = self.id;
+            cx.on_release(move |_, cx| {
+                let _ = owner.update(cx, |app, cx| {
+                    if app.bay_dragging == Some(id) {
+                        app.bay_dragging = None;
+                        cx.notify();
+                    }
+                });
+            })
+            .detach();
+            self.clone()
+        })
+    }
+}
+
+impl Render for BayDrag {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let card = self
+            .owner
+            .update(cx, |app, cx| {
+                app.printers.get(&self.id).map(|printer| {
+                    MakerCalcGpuiApp::render_card(self.id, printer, false, true, None, cx)
+                        .into_any_element()
+                })
+            })
+            .ok()
+            .flatten();
+        div().w(px(BAY_CARD_WIDTH)).children(card)
+    }
+}
 
 pub(super) fn bay_columns(width: f32) -> usize {
     // Fixed-size cards, 16px gaps and 20px outer padding on each side.
@@ -513,7 +575,65 @@ pub(super) fn printer_status(printer: &PrinterEntry, cx: &App) -> AnyElement {
 }
 
 impl MakerCalcGpuiApp {
+    fn move_bay_printer(
+        &mut self,
+        id: LocalPrinterId,
+        target: LocalPrinterId,
+        cx: &mut Context<Self>,
+    ) {
+        reconcile_order(&mut self.bay_order, self.printers.keys().copied());
+        if self.mutation_pending || id == target {
+            return;
+        }
+        let Some(from) = self.bay_order.iter().position(|value| *value == id) else {
+            return;
+        };
+        let Some(to) = self.bay_order.iter().position(|value| *value == target) else {
+            return;
+        };
+        let (reply, response) = tokio::sync::oneshot::channel();
+        if self
+            .edge_actions
+            .try_send(crate::edge::EdgeCommand {
+                action: crate::edge::EdgeAction::MovePrinter { id, target },
+                reply,
+            })
+            .is_err()
+        {
+            self.push_toast(
+                super::feedback::ToastKind::Error,
+                t!("printers.bay.order_save_failed").into_owned(),
+                None,
+                cx,
+            );
+            return;
+        }
+        let previous_order = self.bay_order.clone();
+        self.bay_order.remove(from);
+        self.bay_order.insert(to, id);
+        self.mutation_pending = true;
+        cx.notify();
+        cx.spawn(async move |app, cx| {
+            let saved = matches!(response.await, Ok(Ok(())));
+            let _ = app.update(cx, |app, cx| {
+                app.mutation_pending = false;
+                if !saved {
+                    app.bay_order = previous_order;
+                    reconcile_order(&mut app.bay_order, app.printers.keys().copied());
+                    app.push_toast(
+                        super::feedback::ToastKind::Error,
+                        t!("printers.bay.order_save_failed").into_owned(),
+                        None,
+                        cx,
+                    );
+                }
+                app.notify_if_visible(cx);
+            });
+        })
+        .detach();
+    }
     pub(super) fn select_printer(&mut self, id: LocalPrinterId, cx: &mut Context<Self>) {
+        self.bay_hovered = None;
         self.files_list
             .update(cx, |table, _| table.delegate_mut().suspend_reads());
         if let Some(previous) = self.selected
@@ -538,12 +658,87 @@ impl MakerCalcGpuiApp {
         cx.notify();
     }
 
-    pub(super) fn render_bay(&self, columns: usize, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_bay(
+        &self,
+        columns: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let mut cards = self
-            .printers
+            .bay_order
             .iter()
+            .chain(
+                self.printers
+                    .keys()
+                    .filter(|id| !self.bay_order.contains(id)),
+            )
+            .filter_map(|id| self.printers.get(id).map(|printer| (*id, printer)))
             .map(|(id, printer)| {
-                Self::render_card(*id, printer, false, None, cx).into_any_element()
+                let hover = transition(
+                    (
+                        gpui_kit::ElementId::from(("bay-slot", id.0 as usize)),
+                        "shadow",
+                    ),
+                    if self.bay_hovered == Some(id) {
+                        1_f32
+                    } else {
+                        0_f32
+                    },
+                    Transition::new(std::time::Duration::from_millis(180)).easing(Easing::Ease),
+                    window,
+                    cx,
+                );
+                let dragging = self.bay_dragging == Some(id);
+                div()
+                    .id(("bay-slot", id.0 as usize))
+                    .test_support()
+                    .relative()
+                    .rounded(px(16.))
+                    .when(dragging, |slot| slot.opacity(0.45))
+                    .shadow(vec![
+                        BoxShadow {
+                            inset: false,
+                            color: rgb(0).opacity(0.65 * hover).into(),
+                            offset: point(px(0.), px(40.)),
+                            blur_radius: px(90.),
+                            spread_radius: px(-18.),
+                        },
+                        BoxShadow {
+                            inset: false,
+                            color: rgb(0).opacity(0.45 * hover).into(),
+                            offset: point(px(0.), px(8.)),
+                            blur_radius: px(24.),
+                            spread_radius: px(-8.),
+                        },
+                    ])
+                    .on_hover(cx.listener(move |app, hovered, _, cx| {
+                        if *hovered {
+                            app.bay_hovered = Some(id);
+                        } else if app.bay_hovered == Some(id) {
+                            app.bay_hovered = None;
+                        }
+                        cx.notify();
+                    }))
+                    .child(Self::render_card(id, printer, false, false, None, cx))
+                    .child(
+                        div()
+                            .id(("bay-drop-outline", id.0 as usize))
+                            .test_support()
+                            .absolute()
+                            .inset(px(-5.))
+                            .rounded(px(21.))
+                            .border_2()
+                            .border_dashed()
+                            .border_color(cx.theme().transparent)
+                            .drag_over::<BayDrag>(move |style, drag, _, cx| {
+                                if drag.id != id {
+                                    style.border_color(cx.theme().ring)
+                                } else {
+                                    style
+                                }
+                            }),
+                    )
+                    .into_any_element()
             })
             .collect::<Vec<_>>();
         cards.push(

@@ -28,6 +28,7 @@
       "credentials_short": "Credenciales"
     },
     "bay": {
+      "order_save_failed": "No se pudo guardar el orden de las impresoras. Se restauró el orden anterior.",
       "retained": "Última lectura registrada",
       "retained_age": "Última lectura hace %{age}",
       "metric": "%{label}: %{value}",

@@ -317,6 +317,24 @@ impl PersistedConfig {
         self.printers.len() != previous_length
     }
 
+    pub(crate) fn move_printer(
+        &mut self,
+        id: LocalPrinterId,
+        target: LocalPrinterId,
+    ) -> Result<(), ConfigError> {
+        let locate = |id| {
+            self.printers
+                .iter()
+                .position(|printer| printer.local_id == id)
+                .ok_or_else(|| ConfigError::Validation("printer no longer exists".to_owned()))
+        };
+        let from = locate(id)?;
+        let to = locate(target)?;
+        let printer = self.printers.remove(from);
+        self.printers.insert(to, printer);
+        Ok(())
+    }
+
     pub(crate) fn update_printer_metadata(
         &mut self,
         id: LocalPrinterId,

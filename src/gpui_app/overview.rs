@@ -381,7 +381,7 @@ impl MakerCalcGpuiApp {
             .id("overview-job")
             .test_support()
             .min_w_0()
-            .child(Self::render_card(id, printer, true, details, cx))
+            .child(Self::render_card(id, printer, true, false, details, cx))
             .into_any_element()
     }
 }

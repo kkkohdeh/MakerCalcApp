@@ -98,6 +98,9 @@ fn controls(
             PrintStatus::Printing | PrintStatus::Paused
         );
     h_flex()
+        .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
+            cx.stop_propagation()
+        })
         .flex_none()
         .gap_1()
         .items_center()
@@ -501,6 +504,7 @@ impl MakerCalcGpuiApp {
         id: LocalPrinterId,
         printer: &PrinterEntry,
         in_detail: bool,
+        drag_preview: bool,
         details: Option<AnyElement>,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
@@ -512,10 +516,13 @@ impl MakerCalcGpuiApp {
             .font_medium()
             .line_height(px(24.8))
             .child(printer.name.clone());
-        let printer_name = if in_detail {
+        let printer_name = if in_detail || drag_preview {
             printer_name.into_any_element()
         } else {
             Button::new(("bay-open-printer", id.0 as usize))
+                .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
+                    cx.stop_propagation()
+                })
                 .ghost()
                 .bg(cx.theme().transparent)
                 .flex_1()
@@ -544,6 +551,10 @@ impl MakerCalcGpuiApp {
             && printer.state.telemetry.print_state == PrintStatus::Printing;
         let strip_color = thumbnail_accent(printer);
         let strip_border = cx.theme().border;
+        let drag = BayDrag {
+            id,
+            owner: cx.weak_entity(),
+        };
         let surface = card::surface(false, cx)
             .id(("printer-card", id.0 as usize))
             .test_support()
@@ -563,9 +574,21 @@ impl MakerCalcGpuiApp {
             .gap_0()
             .rounded(px(16.))
             .flex_shrink_0()
-            .when(!in_detail, |surface| {
+            .when(!in_detail && !drag_preview, |surface| {
+                // GPUI takes the drag cursor from the base style.
                 surface
-                    .hover(|style| style.border_color(cx.theme().muted_foreground))
+                    .cursor(CursorStyle::ClosedHand)
+                    .hover(|style| {
+                        style
+                            .cursor(CursorStyle::OpenHand)
+                            .border_color(cx.theme().muted_foreground)
+                    })
+                    .on_drag(drag, |drag, _, _, cx| drag.start(cx))
+                    .on_drop(cx.listener(move |app, drag: &BayDrag, _, cx| {
+                        if drag.owner.entity_id() == cx.entity_id() {
+                            app.move_bay_printer(drag.id, id, cx);
+                        }
+                    }))
                     .on_click(cx.listener(move |app, _, _, cx| app.select_printer(id, cx)))
             });
         surface

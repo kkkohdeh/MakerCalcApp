@@ -28,6 +28,7 @@
       "credentials_short": "Credentials"
     },
     "bay": {
+      "order_save_failed": "Could not save the printer order. The previous order was restored.",
       "retained": "Last recorded reading",
       "retained_age": "Last reading %{age} ago",
       "metric": "%{label}: %{value}",

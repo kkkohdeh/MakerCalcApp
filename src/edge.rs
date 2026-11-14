@@ -59,6 +59,10 @@ pub(crate) enum EdgeAction {
         name: String,
     },
     RemovePrinter(LocalPrinterId),
+    MovePrinter {
+        id: LocalPrinterId,
+        target: LocalPrinterId,
+    },
     SetEdgeToken(Option<String>),
     SetDesktopPreferences(crate::shared::workspace::DesktopPreferences),
     TestNotification,
@@ -92,6 +96,11 @@ impl std::fmt::Debug for EdgeAction {
                 .field("name", name)
                 .finish(),
             Self::RemovePrinter(id) => f.debug_tuple("RemovePrinter").field(id).finish(),
+            Self::MovePrinter { id, target } => f
+                .debug_struct("MovePrinter")
+                .field("id", id)
+                .field("target", target)
+                .finish(),
             Self::SetEdgeToken(_) => f.debug_tuple("SetEdgeToken").field(&"[REDACTED]").finish(),
             Self::SetDesktopPreferences(prefs) => {
                 f.debug_tuple("SetDesktopPreferences").field(prefs).finish()
@@ -483,6 +492,21 @@ impl EdgeActor {
                     Err(error) => {
                         self.emit_sanitized_err("No se pudo eliminar la impresora", error)
                     }
+                }
+            }
+            EdgeAction::MovePrinter { id, target } => {
+                match self
+                    .persist_candidate(move |mut candidate| {
+                        candidate.move_printer(id, target)?;
+                        Ok(candidate)
+                    })
+                    .await
+                {
+                    Ok(config) => {
+                        self.config = config;
+                        Ok(())
+                    }
+                    Err(_) => Err(crate::i18n::t!("printers.bay.order_save_failed").into_owned()),
                 }
             }
             EdgeAction::SetEdgeToken(token) => {
