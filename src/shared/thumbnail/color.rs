@@ -20,8 +20,29 @@ pub(crate) fn from_png(bytes: &[u8], background: [u8; 3]) -> u32 {
         return FALLBACK;
     };
     dominant(&image.into_rgba8())
-        .filter(|color| contrast(*color, background) >= 4.0)
+        .and_then(|color| readable_color(color, background))
         .unwrap_or(FALLBACK)
+}
+
+fn readable_color(color: u32, background: [u8; 3]) -> Option<u32> {
+    if contrast(color, background) >= 4.0 {
+        return Some(color);
+    }
+    let channels = [(color >> 16) as u8, (color >> 8) as u8, color as u8];
+    let [r, g, b] = channels;
+    if family(r, g, b) >= 24 {
+        return None;
+    }
+    let peak = u32::from(r.max(g).max(b));
+    // Raise brightness without replacing the detected hue.
+    for value in peak + 1..=255 {
+        let [r, g, b] = channels.map(|channel| u32::from(channel) * value / peak);
+        let candidate = (r << 16) | (g << 8) | b;
+        if contrast(candidate, background) >= 4.0 {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 fn dominant(image: &image::RgbaImage) -> Option<u32> {
