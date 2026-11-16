@@ -318,6 +318,8 @@ impl MakerCalcGpuiApp {
                             let mut epoch_changed = false;
                             if let Some(printer) = app.printers.get_mut(&id) {
                                 let previous = printer.state.connection;
+                                let became_ready =
+                                    !printer.state.telemetry_ready && state.telemetry_ready;
                                 epoch_changed =
                                     printer.state.connection_epoch != state.connection_epoch;
                                 printer.state = state;
@@ -326,6 +328,18 @@ impl MakerCalcGpuiApp {
                                 }
                                 if app.visual_active {
                                     printer.update_latest_temperature_sample();
+                                }
+                                if app.selected == Some(id)
+                                    && printer.state.connection == LanConnection::Connected
+                                    && printer.state.telemetry_ready
+                                    && (previous != LanConnection::Connected
+                                        || epoch_changed
+                                        || became_ready)
+                                {
+                                    let _ = printer
+                                        .detail
+                                        .requests
+                                        .try_send(DetailRequest::RefreshMachine);
                                 }
                             }
                             if epoch_changed {
@@ -490,6 +504,13 @@ impl MakerCalcGpuiApp {
             && let Some(printer) = self.printers.get(&id)
         {
             let _ = printer.detail.active.send(true);
+            if printer.state.connection == LanConnection::Connected && printer.state.telemetry_ready
+            {
+                let _ = printer
+                    .detail
+                    .requests
+                    .try_send(DetailRequest::RefreshMachine);
+            }
         }
         self.notify_if_visible(cx);
     }
