@@ -640,6 +640,7 @@ pub(crate) fn run(
             }
             cx.spawn(async move |cx| {
                 cx.open_window(options, |window, cx| {
+                    window.set_window_title("MakerCalc");
                     let view = cx.new(|cx| {
                         let mut app = MakerCalcGpuiApp::new(edge, window, cx);
                         app.attach_desktop(startup, window, cx);

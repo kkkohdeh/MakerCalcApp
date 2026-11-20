@@ -21,8 +21,8 @@ pub(super) fn initial_window_geometry(work_area: Bounds<Pixels>) -> (Bounds<Pixe
         (work_area.size.height - px(32.)).max(px(1.)),
     );
     let preferred = size(
-        px(1200.).min(available.width),
-        px(720.).min(available.height),
+        px(1176.).min(available.width),
+        px(768.).min(available.height),
     );
     let minimum = size(
         px(640.).min(available.width),
