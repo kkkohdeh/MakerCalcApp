@@ -659,7 +659,7 @@ pub(super) fn sync_registry_with_thumbnails(
                 thumbnail_sha256: thumbnail_sha256.map(str::to_owned),
                 thumbnail_supported,
                 detail_source: std::sync::Arc::downgrade(&detail),
-                detail: super::wire::WireDetail::project(&detail),
+                detail: super::wire::WireDetail::project(&detail, &state.telemetry),
             },
             now,
         );

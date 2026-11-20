@@ -1,9 +1,11 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Map, Value, json};
 
 use super::super::{Device, LOCAL_MAX_TELEMETRY_BYTES};
-use crate::shared::machine::SoftwareRole;
+use crate::shared::control::MachineActionKind;
+use crate::shared::machine::{FanRole, SoftwareRole, SupplyKind};
+use crate::shared::telemetry::{ElementId, PrinterTelemetry, SupplyState};
 use crate::shared::workspace::{DetailState, DeviceKind};
 
 const MAX_ELEMENTS: usize = 32;
@@ -16,24 +18,198 @@ type Fields = Map<String, Value>;
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(in crate::cloud) struct WireDetail {
     telemetry: Fields,
+    elements: BTreeMap<(&'static str, ElementId), Fields>,
+    part_fans: Vec<Value>,
     device: Fields,
 }
 
 impl WireDetail {
-    pub(in crate::cloud) fn project(detail: &DetailState) -> Self {
+    pub(in crate::cloud) fn project(detail: &DetailState, telemetry: &PrinterTelemetry) -> Self {
         use DeviceKind as K;
 
         let mut out = Self::default();
         let machine = &detail.machine;
-        if let Some(target) = detail
-            .devices
-            .iter()
-            .filter(|device| device.kind == K::ChamberHeater)
-            .find_map(|device| finite(device.target_temperature_c))
-        {
-            out.telemetry
-                .insert("chamber_target_temperature_c".into(), json!(target));
+        let mut fans = BTreeMap::new();
+        let mut environment = BTreeMap::new();
+        let mut part_fans = BTreeMap::new();
+        let mut dryers = BTreeMap::new();
+
+        for device in &detail.devices {
+            let output = range(device.output_pct, 0.0, 100.0);
+            let rpm = range(device.rpm, 0.0, f64::INFINITY);
+            let display_name = label(&device.display_name, MAX_LABEL_BYTES);
+            if device.kind == K::ChamberHeater
+                && let Some(target) = finite(device.target_temperature_c)
+            {
+                out.telemetry
+                    .entry("chamber_target_temperature_c")
+                    .or_insert(json!(target));
+            }
+            let Some(id) = device.telemetry_id else {
+                continue;
+            };
+            match device.kind {
+                K::Fan if device.fan_role == Some(FanRole::PartCooling) => {
+                    if output.is_some() || rpm.is_some() {
+                        part_fans.entry(id).or_insert_with(|| json!({
+                            "id": id, "PartCoolingFanPowerPct": output, "PartCoolingFanRpm": rpm,
+                        }));
+                    }
+                }
+                K::Fan => {
+                    if output.is_some() || rpm.is_some() || device.enabled.is_some() {
+                        fans.entry(id).or_insert_with(|| {
+                            with_id(
+                                id,
+                                [
+                                    ("fan_role", json!(device.fan_role)),
+                                    ("display_name", json!(display_name)),
+                                    ("output_pct", json!(output)),
+                                    ("enabled", json!(device.enabled)),
+                                    ("rpm", json!(rpm)),
+                                ],
+                            )
+                        });
+                    }
+                }
+                K::TemperatureSensor => {
+                    let readings = device.readings.environment.as_ref();
+                    let fields = fields([
+                        ("temperature_c", json!(finite(device.temperature_c))),
+                        (
+                            "relative_humidity_pct",
+                            json!(range(
+                                readings.and_then(|r| r.relative_humidity_pct),
+                                0.0,
+                                100.0
+                            )),
+                        ),
+                        (
+                            "pressure_pa",
+                            json!(range(
+                                readings.and_then(|r| r.pressure_pa),
+                                0.0,
+                                f64::INFINITY
+                            )),
+                        ),
+                        (
+                            "gas_resistance_ohm",
+                            json!(range(
+                                readings.and_then(|r| r.gas_resistance_ohm),
+                                0.0,
+                                f64::INFINITY
+                            )),
+                        ),
+                    ]);
+                    if !fields.is_empty() {
+                        environment.entry(id).or_insert_with(|| {
+                            let mut fields = fields;
+                            fields.insert("id".into(), json!(id));
+                            if let Some(name) = display_name {
+                                fields.insert("display_name".into(), json!(name));
+                            }
+                            Value::Object(fields)
+                        });
+                    }
+                }
+                K::Nozzle => {
+                    out.elements.insert(
+                        ("nozzles", id),
+                        fields([
+                            (
+                                "nozzle_diameter_mm",
+                                json!(range(device.nozzle_diameter_mm, 0.1, 2.0)),
+                            ),
+                            ("output_pct", json!(output)),
+                        ]),
+                    );
+                }
+                K::Bed | K::Light => {
+                    let key = if device.kind == K::Bed {
+                        "beds"
+                    } else {
+                        "lights"
+                    };
+                    out.elements
+                        .insert((key, id), fields([("output_pct", json!(output))]));
+                }
+                _ => {}
+            }
         }
+        for sensor in &telemetry.filament_sensors {
+            if let Some(name) = sensor
+                .name
+                .as_deref()
+                .and_then(|name| label(name, MAX_LABEL_BYTES))
+            {
+                out.elements.insert(
+                    ("filament_sensors", sensor.id),
+                    fields([("name", json!(name))]),
+                );
+            }
+        }
+        for supply in &machine.supplies {
+            let operation = supply.operation.filter(|operation| {
+                matches!(
+                    operation.action,
+                    MachineActionKind::LoadFilament
+                        | MachineActionKind::UnloadFilament
+                        | MachineActionKind::CancelFilamentOperation
+                )
+            });
+            out.elements
+                .entry(("filament_supplies", supply.reading.id))
+                .or_insert_with(|| {
+                    fields([
+                        (
+                            "kind",
+                            json!((supply.kind != SupplyKind::Unknown).then_some(supply.kind)),
+                        ),
+                        (
+                            "state",
+                            json!(
+                                (supply.reading.state != SupplyState::Unknown)
+                                    .then_some(supply.reading.state)
+                            ),
+                        ),
+                        (
+                            "remaining_pct",
+                            json!(supply.remaining_pct.filter(|pct| *pct <= 100)),
+                        ),
+                        ("operation", json!(operation)),
+                    ])
+                });
+        }
+        out.elements.retain(|_, fields| !fields.is_empty());
+
+        for dryer in &machine.dryers {
+            if let Some(label) = label(&dryer.label, MAX_LABEL_BYTES) {
+                dryers.entry(dryer.telemetry_id).or_insert_with(|| {
+                    with_id(
+                        dryer.telemetry_id,
+                        [
+                            ("label", json!(label)),
+                            ("state", json!(dryer.state)),
+                            ("remaining_minutes", json!(dryer.remaining_minutes)),
+                            ("target", json!(dryer.target)),
+                        ],
+                    )
+                });
+            }
+        }
+        for (key, values) in [
+            ("fans", fans),
+            ("environment_sensors", environment),
+            ("dryers", dryers),
+        ] {
+            if !values.is_empty() {
+                out.telemetry.insert(
+                    key.into(),
+                    Value::Array(values.into_values().take(MAX_ELEMENTS).collect()),
+                );
+            }
+        }
+        out.part_fans = part_fans.into_values().take(MAX_ELEMENTS).collect();
 
         let issues = machine.issues.iter().take(MAX_ELEMENTS).collect::<Vec<_>>();
         let mut machine_fields = fields([
@@ -195,18 +371,66 @@ impl WireDetail {
     }
 
     pub(in crate::cloud) fn extend_telemetry(&self, base: &mut Value) {
-        if self.telemetry.is_empty() {
+        if self.telemetry.is_empty() && self.elements.is_empty() && self.part_fans.is_empty() {
             return;
         }
         let Some(telemetry) = base.as_object_mut() else {
             return;
         };
+        let mut original = Fields::new();
+        for ((key, id), fields) in &self.elements {
+            let Some(items) = telemetry.get_mut(*key).and_then(Value::as_array_mut) else {
+                continue;
+            };
+            if !original.contains_key(*key) {
+                original.insert((*key).into(), Value::Array(items.clone()));
+            }
+            if let Some(item) = items
+                .iter_mut()
+                .find(|item| element_id(item) == Some(u64::from(id.0)))
+                && let Some(item) = item.as_object_mut()
+            {
+                item.extend(fields.clone());
+            }
+        }
+        if !self.part_fans.is_empty()
+            && let Some(items) = telemetry
+                .get_mut("part_cooling_fans")
+                .and_then(Value::as_array_mut)
+        {
+            original.insert("part_cooling_fans".into(), Value::Array(items.clone()));
+            let mut seen: BTreeSet<_> = items.iter().filter_map(element_id).collect();
+            for fan in &self.part_fans {
+                if items.len() < MAX_ELEMENTS && seen.insert(element_id(fan).unwrap_or_default()) {
+                    items.push(fan.clone());
+                }
+            }
+        }
         telemetry.extend(self.telemetry.clone());
-        for key in ["motion", "machine", "chamber_target_temperature_c"] {
+
+        for key in [
+            "environment_sensors",
+            "fans",
+            "dryers",
+            "filament_sensors",
+            "lights",
+            "beds",
+            "nozzles",
+            "part_cooling_fans",
+            "filament_supplies",
+            "motion",
+            "machine",
+            "chamber_target_temperature_c",
+        ] {
             if base.to_string().len() <= LOCAL_MAX_TELEMETRY_BYTES {
                 break;
             }
-            base.as_object_mut().expect("telemetry object").remove(key);
+            let telemetry = base.as_object_mut().expect("telemetry object");
+            if let Some(original) = original.remove(key) {
+                telemetry.insert(key.into(), original);
+            } else if self.telemetry.contains_key(key) {
+                telemetry.remove(key);
+            }
         }
     }
 }
@@ -217,6 +441,12 @@ fn fields<const N: usize>(values: [(&str, Value); N]) -> Fields {
         .filter(|(_, v)| !v.is_null())
         .map(|(k, v)| (k.into(), v))
         .collect()
+}
+
+fn with_id<const N: usize>(id: ElementId, values: [(&str, Value); N]) -> Value {
+    let mut map = fields(values);
+    map.insert("id".into(), json!(id));
+    Value::Object(map)
 }
 
 fn insert_group(out: &mut Fields, key: &str, group: Fields) {
