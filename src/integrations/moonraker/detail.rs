@@ -370,17 +370,26 @@ pub(crate) fn subscription_params(objects: &[String], expanded: bool) -> Value {
                     !suffix.is_empty() && suffix.bytes().all(|byte| byte.is_ascii_digit())
                 })
             {
-                requested.insert(object.clone(), json!(["temperature", "target"]));
+                requested.insert(object.clone(), json!(["temperature", "target", "power"]));
             }
         }
         if available("heater_bed") {
-            requested.insert("heater_bed".to_owned(), json!(["temperature", "target"]));
+            requested.insert(
+                "heater_bed".to_owned(),
+                json!(["temperature", "target", "power"]),
+            );
         }
         if available("toolhead") {
-            requested.insert("toolhead".to_owned(), json!(["extruder"]));
+            requested.insert(
+                "toolhead".to_owned(),
+                json!(["extruder", "position", "homed_axes"]),
+            );
         }
         if available("motion_report") {
-            requested.insert("motion_report".to_owned(), json!(["live_velocity"]));
+            requested.insert(
+                "motion_report".to_owned(),
+                json!(["live_velocity", "live_position"]),
+            );
         }
         if available("fan") {
             requested.insert("fan".to_owned(), json!(["speed", "rpm"]));
@@ -388,12 +397,41 @@ pub(crate) fn subscription_params(objects: &[String], expanded: bool) -> Value {
         if available("gcode_move") {
             requested.insert(
                 "gcode_move".to_owned(),
-                json!(["speed_factor", "gcode_position"]),
+                json!([
+                    "speed_factor",
+                    "gcode_position",
+                    "position",
+                    "homing_origin",
+                    "extrude_factor"
+                ]),
             );
         }
         for object in objects {
+            if !valid_identifier(object) {
+                continue;
+            }
             if object.starts_with("output_pin ") {
                 requested.insert(object.clone(), json!(["value"]));
+            } else if [
+                "fan_generic ",
+                "heater_fan ",
+                "controller_fan ",
+                "temperature_fan ",
+            ]
+            .iter()
+            .any(|prefix| object.starts_with(prefix))
+            {
+                requested.insert(object.clone(), json!(["speed", "rpm", "enabled"]));
+            } else if ["bme280 ", "htu21d ", "sht3x "]
+                .iter()
+                .any(|prefix| object.starts_with(prefix))
+            {
+                requested.insert(
+                    object.clone(),
+                    json!(["temperature", "humidity", "pressure", "gas"]),
+                );
+            } else if object.starts_with("temperature_sensor ") {
+                requested.insert(object.clone(), json!(["temperature"]));
             }
         }
         for object in objects {

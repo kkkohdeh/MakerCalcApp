@@ -9,7 +9,8 @@ use super::printer::PrintStatus;
 use super::telemetry::FilamentSupplyTelemetry;
 use super::workspace::ResourceId;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum PrintSpeedProfile {
     Silent,
     Standard,
@@ -171,7 +172,8 @@ pub(crate) struct SupplyOperation {
     pub(crate) step: Option<u8>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum DryingState {
     Idle,
     Starting,
@@ -182,7 +184,7 @@ pub(crate) enum DryingState {
     Unknown,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub(crate) struct DryingCycle {
     pub(crate) temperature_c: u16,
     pub(crate) duration_hours: u16,
@@ -204,6 +206,7 @@ impl DryingLimits {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DryerResource {
     pub(crate) id: ResourceId,
+    pub(crate) telemetry_id: super::telemetry::ElementId,
     pub(crate) label: String,
     pub(crate) state: DryingState,
     pub(crate) remaining_minutes: Option<u16>,

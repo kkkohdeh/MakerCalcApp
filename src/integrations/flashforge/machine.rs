@@ -895,7 +895,16 @@ impl Projection {
         power: Option<f64>,
         enabled: Option<bool>,
     ) {
+        let telemetry_id = match target {
+            Target::PartFan => Some(ElementId(1)),
+            Target::LeftPartFan => Some(ElementId(2)),
+            Target::ChamberFan => Some(ElementId(3)),
+            Target::InternalFan => Some(ElementId(4)),
+            Target::ExternalFan => Some(ElementId(5)),
+            _ => None,
+        };
         let mut fan = Device::new(self.resource(target), DeviceKind::Fan, "Fan".into());
+        fan.telemetry_id = telemetry_id;
         fan.fan_role = Some(role);
         fan.output_pct = power;
         fan.enabled = enabled.or_else(|| power.map(|p| p > 0.0));

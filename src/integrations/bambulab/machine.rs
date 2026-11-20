@@ -286,9 +286,11 @@ impl Projection {
             ),
         ];
         fans.into_iter()
-            .filter_map(|(target, role, power)| {
+            .enumerate()
+            .filter_map(|(index, (target, role, power))| {
                 let power = power?;
                 let mut device = Device::new(self.id(target), DeviceKind::Fan, "Fan".into());
+                device.telemetry_id = Some(ElementId(index as u32 + 1));
                 device.fan_role = Some(role);
                 device.output_pct = Some(power);
                 device.enabled = Some(power > 0.0);
@@ -319,6 +321,7 @@ impl Projection {
                     DeviceKind::TemperatureSensor,
                     ams_name(id),
                 );
+                device.telemetry_id = Some(ElementId(id as u32 + 1));
                 device.temperature_c = temperature;
                 device.readings.environment = humidity.map(|humidity| EnvironmentalReadings {
                     relative_humidity_pct: Some(humidity),

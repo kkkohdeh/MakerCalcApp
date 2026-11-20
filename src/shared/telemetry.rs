@@ -8,7 +8,7 @@ use crate::shared::printer::{PrintStatus, PrinterObservation};
 pub(crate) const DICTIONARY_VERSION: &str = "21-v1";
 pub(crate) const MAX_LIGHTS: usize = 8;
 
-/// Element identifier scoped to a local session.
+/// Stable telemetry identity scoped to a printer and collection.
 #[derive(
     Clone, Copy, Debug, Default, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize,
 )]

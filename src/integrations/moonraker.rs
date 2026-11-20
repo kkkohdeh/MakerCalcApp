@@ -259,6 +259,7 @@ struct DetailSession {
     cameras: BTreeSet<String>,
     camera_snapshots: BTreeMap<String, String>,
     pending_deltas: Vec<(Value, f64)>,
+    firmware_request: Option<u64>,
     pending_control: Option<PendingControl>,
 }
 
@@ -304,6 +305,7 @@ impl DetailSession {
             cameras: BTreeSet::new(),
             camera_snapshots: BTreeMap::new(),
             pending_deltas: Vec::new(),
+            firmware_request: None,
             pending_control: None,
         }
     }
@@ -319,6 +321,18 @@ impl DetailSession {
         self.active = false;
         self.cache.reset(self.generation);
         self.state = DetailState::empty(self.generation);
+        self.pending_deltas.clear();
+        self.firmware_request = None;
+    }
+
+    fn reset_overview(&mut self, active: bool) {
+        self.active = active;
+        self.cache.reset(self.generation);
+        self.state.objects = json!({});
+        self.state
+            .sections
+            .retain(|key, _| matches!(key.as_str(), "server:server.info:base" | adapter::FIRMWARE));
+        self.state.live = active;
         self.pending_deltas.clear();
     }
     fn set_section(
@@ -715,7 +729,13 @@ async fn discover_and_subscribe(
         detail_io,
         api_key,
         expanded,
-    )
+    )?;
+    if detail.firmware_request.is_none() && !detail.state.sections.contains_key(adapter::FIRMWARE) {
+        send_json(socket, *next_id, "printer.info", None).await?;
+        detail.firmware_request = Some(*next_id);
+        *next_id += 1;
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -760,10 +780,7 @@ async fn event_loop(
                 let expand = *detail_io.active.borrow();
                 if expand == detail.active { continue; }
                 if expand {
-                    detail.active = true;
-                    detail.cache.reset(detail.generation);
-                    detail.state = DetailState::empty(detail.generation);
-                    detail.state.live = true;
+                    detail.reset_overview(true);
                     publish_detail(detail_io, detail);
                     let server_info = send_and_wait(
                         socket,
@@ -809,7 +826,7 @@ async fn event_loop(
                 } else {
                     camera_captures.shutdown().await;
                     camera_io.state.send_replace(Arc::new(CameraState::empty()));
-                    detail.clear();
+                    detail.reset_overview(false);
                     publish_detail(detail_io, detail);
                     let subscribed = send_and_wait(socket, *next_id, "printer.objects.subscribe", Some(parser.subscriptions(&detail.objects, false)), parser, state, sender, detail, detail_io, shutdown, api_key).await?;
                     *next_id += 1;
@@ -1914,6 +1931,21 @@ fn apply_notification(
     detail_io: &mut DetailIo,
     api_key: Option<&str>,
 ) -> Result<SessionSignal, MoonrakerError> {
+    if detail
+        .firmware_request
+        .is_some_and(|id| value.get("id").and_then(Value::as_u64) == Some(id))
+    {
+        detail.firmware_request = None;
+        let result = value.get("result").map(|result| redact(result, api_key));
+        let status = if result.is_some() {
+            SectionStatus::Ready
+        } else {
+            SectionStatus::Unsupported
+        };
+        detail.set_section(adapter::FIRMWARE.to_owned(), status, result, None);
+        publish_detail(detail_io, detail);
+        return Ok(SessionSignal::Continue);
+    }
     if let Some(control) = detail
         .pending_control
         .take_if(|control| value.get("id").and_then(Value::as_u64) == Some(control.id))
@@ -1987,25 +2019,26 @@ fn apply_notification(
         }
         ParserEvent::Ignored => {}
     }
-    if detail.active {
-        let safe = redact(status, api_key);
-        match detail
-            .cache
-            .apply_delta(detail.generation, eventtime, &safe)
-        {
-            Ok(true) => {
-                detail.state.objects = detail.cache.objects().clone();
-                detail.state.live = true;
-            }
-            Ok(false) => {}
-            Err(error) => detail.set_section(
+    let safe = redact(status, api_key);
+    match detail
+        .cache
+        .apply_delta(detail.generation, eventtime, &safe)
+    {
+        Ok(true) => {
+            detail.state.objects = detail.cache.objects().clone();
+            detail.state.live = detail.active;
+            publish_detail(detail_io, detail);
+        }
+        Ok(false) => {}
+        Err(error) => {
+            detail.set_section(
                 "telemetry".to_owned(),
                 section_status_for_detail_error(&error),
                 None,
                 Some(error.to_string()),
-            ),
+            );
+            publish_detail(detail_io, detail);
         }
-        publish_detail(detail_io, detail);
     }
     Ok(SessionSignal::Continue)
 }
@@ -2036,26 +2069,24 @@ fn apply_subscription_base(
     sender
         .send(state.clone())
         .map_err(|error| MoonrakerError::Transport(error.to_string()))?;
-    if expanded {
-        detail.cache.reset(detail.generation);
-        let safe = redact(status, api_key);
-        match detail
-            .cache
-            .replace_base(detail.generation, eventtime, &safe)
-        {
-            Ok(true) => {
-                detail.state.objects = detail.cache.objects().clone();
-                detail.state.live = true;
-                detail.set_section("telemetry".to_owned(), SectionStatus::Ready, None, None);
-            }
-            Ok(false) => {}
-            Err(error) => detail.set_section(
-                "telemetry".to_owned(),
-                section_status_for_detail_error(&error),
-                None,
-                Some(error.to_string()),
-            ),
+    detail.cache.reset(detail.generation);
+    let safe = redact(status, api_key);
+    match detail
+        .cache
+        .replace_base(detail.generation, eventtime, &safe)
+    {
+        Ok(true) => {
+            detail.state.objects = detail.cache.objects().clone();
+            detail.state.live = expanded;
+            detail.set_section("telemetry".to_owned(), SectionStatus::Ready, None, None);
         }
+        Ok(false) => {}
+        Err(error) => detail.set_section(
+            "telemetry".to_owned(),
+            section_status_for_detail_error(&error),
+            None,
+            Some(error.to_string()),
+        ),
     }
     let delayed = std::mem::take(&mut detail.pending_deltas);
     for (delta, eventtime) in delayed {
@@ -2071,15 +2102,14 @@ fn apply_subscription_base(
             }
             ParserEvent::Ignored => {}
         }
-        if expanded {
-            let safe = redact(&delta, api_key);
-            if detail
+        let safe = redact(&delta, api_key);
+        if matches!(
+            detail
                 .cache
-                .apply_delta(detail.generation, eventtime, &safe)
-                .is_ok()
-            {
-                detail.state.objects = detail.cache.objects().clone();
-            }
+                .apply_delta(detail.generation, eventtime, &safe),
+            Ok(true)
+        ) {
+            detail.state.objects = detail.cache.objects().clone();
         }
     }
     publish_detail(detail_io, detail);
@@ -2321,6 +2351,13 @@ fn message_to_json(message: Message) -> Result<Option<Value>, MoonrakerError> {
         )),
         Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => Ok(None),
     }
+}
+
+fn telemetry_id_for_object(name: &str) -> ElementId {
+    use sha2::{Digest, Sha256};
+
+    let hash = Sha256::digest(name.as_bytes());
+    ElementId(u32::from_be_bytes([hash[0], hash[1], hash[2], hash[3]]))
 }
 
 fn validate_eventtime(eventtime: f64) -> Result<(), MoonrakerError> {
@@ -2820,15 +2857,8 @@ fn apply_fields(
                         {
                             sensor.filament_present = detected;
                         } else {
-                            let next_id = next
-                                .filament_sensors
-                                .iter()
-                                .map(|s| s.id.0)
-                                .max()
-                                .unwrap_or(0)
-                                .saturating_add(1);
                             next.filament_sensors.push(FilamentSensorTelemetry {
-                                id: ElementId(next_id),
+                                id: telemetry_id_for_object(key),
                                 filament_present: detected,
                                 name: Some(key.clone()),
                             });

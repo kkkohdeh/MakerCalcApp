@@ -27,7 +27,7 @@ const CAMERAS: &str = "model:cameras";
 const POWER: &str = "model:power";
 const LIGHTS: &str = "model:lights";
 const SERVER: &str = "server:server.info:base";
-const FIRMWARE: &str = "model:firmware";
+pub(super) const FIRMWARE: &str = "model:firmware";
 const COMMANDS: &str = "model:commands";
 const STORAGE: &str = "model:storage";
 const CONFIGURATION: &str = "model:configuration_pending";
@@ -184,6 +184,25 @@ impl Projection {
             || name.starts_with("filament_motion_sensor ")
         {
             (Kind::FilamentSensor, "Filamento")
+        } else if let Some(pin) = name.strip_prefix("output_pin ") {
+            let role_id = [
+                &self.light_bindings.build_area,
+                &self.light_bindings.toolhead,
+            ]
+            .into_iter()
+            .enumerate()
+            .find_map(|(index, binding)| match binding {
+                Some(MoonrakerLightBinding::OutputPin { name }) if name == pin => {
+                    Some(crate::shared::telemetry::ElementId(index as u32 + 1))
+                }
+                _ => None,
+            })?;
+            let output_pct = fraction(value, "value")?;
+            let id = self.id(Resource::Device(name.to_owned()));
+            let mut device = model::Device::new(id, Kind::Light, clean(pin));
+            device.telemetry_id = Some(role_id);
+            device.output_pct = Some(output_pct);
+            return Some(device);
         } else if name == "motion_report" {
             (Kind::Motion, "Movimiento")
         } else {
@@ -212,6 +231,10 @@ impl Projection {
                 .and_then(|index| index.checked_add(1))
                 .map(crate::shared::telemetry::ElementId),
             Kind::Bed => Some(crate::shared::telemetry::ElementId(1)),
+            Kind::Fan if name != "fan" => Some(super::telemetry_id_for_object(name)),
+            Kind::TemperatureSensor if !name.starts_with("heater_generic ") => {
+                Some(super::telemetry_id_for_object(name))
+            }
             _ => None,
         };
         machine::populate(name, value, &mut device.readings);

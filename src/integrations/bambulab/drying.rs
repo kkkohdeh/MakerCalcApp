@@ -93,6 +93,7 @@ impl Unit<'_> {
         };
         DryerResource {
             id,
+            telemetry_id: crate::shared::telemetry::ElementId((self.id + 1) as u32),
             label,
             state,
             limits,
