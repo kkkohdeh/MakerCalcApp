@@ -390,7 +390,53 @@ pub(crate) struct MachineCommand {
     pub(crate) job_target: Option<crate::state::MachineJobTarget>,
     pub(crate) submitted_at: Instant,
     pub(crate) action: MachineAction,
+    pub(crate) remote: Option<RemoteSession>,
     pub(crate) reply: oneshot::Sender<ControlResult>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct RemoteSession(pub(crate) std::sync::Weak<()>);
+
+impl PartialEq for RemoteSession {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.ptr_eq(&other.0)
+    }
+}
+
+impl RemoteSession {
+    pub(crate) fn permits(
+        &self,
+        action: &MachineAction,
+        state: &crate::state::PrinterState,
+    ) -> bool {
+        use MachineAction as A;
+
+        self.0.strong_count() != 0
+            && state.controls.remote
+            && matches!(
+                action,
+                A::SetLightBrightness { .. }
+                    | A::SetFanPower { .. }
+                    | A::SetFanEnabled { .. }
+                    | A::SetPrintSpeedOverride { .. }
+                    | A::SetFlowOverride { .. }
+                    | A::SetZOffset { .. }
+                    | A::SetAutoShutdown { .. }
+                    | A::SetPrintQueuePaused { paused: true }
+                    | A::RemoveQueuedPrint { .. }
+                    | A::ExcludePrintObject { .. }
+                    | A::AcknowledgePrinterAlert { .. }
+                    | A::SetDeviceName { .. }
+            )
+    }
+}
+
+impl MachineCommand {
+    pub(crate) fn permits(&self, state: &crate::state::PrinterState, local_active: bool) -> bool {
+        self.remote
+            .as_ref()
+            .map_or(local_active, |remote| remote.permits(&self.action, state))
+    }
 }
 
 /// Retains one explicit request while its adapter waits for fresh thermal observations.

@@ -9,7 +9,10 @@ use super::{Device, LOCAL_MAX_MESSAGE_BYTES, SCHEMA_VERSION};
 use crate::shared::workspace::HistoryTotals;
 use crate::state::LanConnection;
 
+mod command;
 mod detail;
+mod technical;
+pub(super) use command::Command;
 pub(super) use detail::WireDetail;
 
 #[derive(Serialize)]
@@ -55,6 +58,8 @@ pub(super) struct PrinterPayload<'a> {
     history_totals: Option<&'a HistoryTotals>,
     #[serde(skip_serializing_if = "Option::is_none")]
     device: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    technical: Option<&'a serde_json::Value>,
 }
 
 // Compare wire payloads; local-only changes must not trigger updates.
@@ -78,6 +83,7 @@ impl WirePrinter {
             telemetry: self.telemetry_json()?,
             history_totals: self.history_totals.as_ref(),
             device: self.detail.device_json(self.device.as_ref()),
+            technical: self.detail.technical.as_ref(),
         })
     }
 
@@ -99,6 +105,7 @@ impl WirePrinter {
         }
         detail::bound_base_telemetry(&mut wire);
         self.detail.extend_telemetry(&mut wire);
+        detail::bound_alert_ids(&mut wire);
         Ok(Some(wire))
     }
 
@@ -169,10 +176,10 @@ pub(super) enum ServerMessage {
     Command {
         v: u8,
         printer_id: String,
-        action: CommandAction,
-        // Keep unknown role names decodable without widening the normalized LightRole.
         #[serde(default)]
-        role: Option<String>,
+        action: serde_json::Value,
+        #[serde(flatten)]
+        params: serde_json::Map<String, serde_json::Value>,
     },
     #[serde(rename = "ready")]
     Ready {

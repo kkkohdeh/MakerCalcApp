@@ -8,8 +8,8 @@ use crate::shared::machine::{FanRole, SoftwareRole, SupplyKind};
 use crate::shared::telemetry::{ElementId, PrinterTelemetry, SupplyState};
 use crate::shared::workspace::{DetailState, DeviceKind};
 
-const MAX_ELEMENTS: usize = 32;
-const MAX_LABEL_BYTES: usize = 1024;
+pub(super) const MAX_ELEMENTS: usize = 32;
+pub(super) const MAX_LABEL_BYTES: usize = 1024;
 const MAX_NAME_BYTES: usize = 128;
 
 type Fields = Map<String, Value>;
@@ -19,12 +19,17 @@ type Fields = Map<String, Value>;
 pub(in crate::cloud) struct WireDetail {
     telemetry: Fields,
     elements: BTreeMap<(&'static str, ElementId), Fields>,
-    part_fans: Vec<Value>,
+    extra_elements: BTreeMap<&'static str, Vec<Value>>,
     device: Fields,
+    pub(super) technical: Option<Value>,
 }
 
 impl WireDetail {
-    pub(in crate::cloud) fn project(detail: &DetailState, telemetry: &PrinterTelemetry) -> Self {
+    pub(in crate::cloud) fn project(
+        detail: &DetailState,
+        telemetry: &PrinterTelemetry,
+        job: Option<(u64, u64)>,
+    ) -> Self {
         use DeviceKind as K;
 
         let mut out = Self::default();
@@ -33,8 +38,25 @@ impl WireDetail {
         let mut environment = BTreeMap::new();
         let mut part_fans = BTreeMap::new();
         let mut dryers = BTreeMap::new();
+        let mut lights = BTreeMap::new();
+        let resources = detail
+            .devices
+            .iter()
+            .chain(detail.lights.value.iter().flatten());
+        let fan_ids = super::technical::unique_ids(
+            resources
+                .clone()
+                .filter(|device| device.kind == K::Fan)
+                .filter_map(|device| device.telemetry_id),
+        );
+        let light_ids = super::technical::unique_ids(
+            resources
+                .clone()
+                .filter(|device| device.kind == K::Light)
+                .filter_map(|device| device.telemetry_id),
+        );
 
-        for device in &detail.devices {
+        for device in resources {
             let output = range(device.output_pct, 0.0, 100.0);
             let rpm = range(device.rpm, 0.0, f64::INFINITY);
             let display_name = label(&device.display_name, MAX_LABEL_BYTES);
@@ -50,14 +72,29 @@ impl WireDetail {
             };
             match device.kind {
                 K::Fan if device.fan_role == Some(FanRole::PartCooling) => {
-                    if output.is_some() || rpm.is_some() {
+                    let actions = (fan_ids.get(&id) == Some(&1) && !device.actions.is_empty())
+                        .then_some(&device.actions);
+                    if let Some(actions) = actions {
+                        out.elements.insert(
+                            ("part_cooling_fans", id),
+                            fields([("actions", json!(actions))]),
+                        );
+                    }
+                    if output.is_some() || rpm.is_some() || actions.is_some() {
                         part_fans.entry(id).or_insert_with(|| json!({
                             "id": id, "PartCoolingFanPowerPct": output, "PartCoolingFanRpm": rpm,
+                            "actions": actions.map_or(&[][..], Vec::as_slice),
                         }));
                     }
                 }
                 K::Fan => {
-                    if output.is_some() || rpm.is_some() || device.enabled.is_some() {
+                    let actions = (fan_ids.get(&id) == Some(&1) && !device.actions.is_empty())
+                        .then_some(&device.actions);
+                    if output.is_some()
+                        || rpm.is_some()
+                        || device.enabled.is_some()
+                        || actions.is_some()
+                    {
                         fans.entry(id).or_insert_with(|| {
                             with_id(
                                 id,
@@ -67,6 +104,7 @@ impl WireDetail {
                                     ("output_pct", json!(output)),
                                     ("enabled", json!(device.enabled)),
                                     ("rpm", json!(rpm)),
+                                    ("actions", json!(actions)),
                                 ],
                             )
                         });
@@ -130,8 +168,21 @@ impl WireDetail {
                     } else {
                         "lights"
                     };
-                    out.elements
-                        .insert((key, id), fields([("output_pct", json!(output))]));
+                    let actions = (key == "lights"
+                        && light_ids.get(&id) == Some(&1)
+                        && !device.actions.is_empty())
+                    .then_some(&device.actions);
+                    let extra =
+                        fields([("output_pct", json!(output)), ("actions", json!(actions))]);
+                    if key == "lights"
+                        && (actions.is_some() || output.is_some() || device.enabled.is_some())
+                    {
+                        let mut light = extra.clone();
+                        light.extend(fields([("id", json!(id)), ("role", json!("unknown"))]));
+                        light.insert("LightEnabled".into(), json!(device.enabled));
+                        lights.entry(id).or_insert(Value::Object(light));
+                    }
+                    out.elements.insert((key, id), extra);
                 }
                 _ => {}
             }
@@ -209,7 +260,12 @@ impl WireDetail {
                 );
             }
         }
-        out.part_fans = part_fans.into_values().take(MAX_ELEMENTS).collect();
+        for (key, values) in [("part_cooling_fans", part_fans), ("lights", lights)] {
+            if !values.is_empty() {
+                out.extra_elements
+                    .insert(key, values.into_values().take(MAX_ELEMENTS).collect());
+            }
+        }
 
         let issues = machine.issues.iter().take(MAX_ELEMENTS).collect::<Vec<_>>();
         let mut machine_fields = fields([
@@ -224,6 +280,26 @@ impl WireDetail {
                 json!(machine.material_station_slots.filter(|count| *count > 0)),
             ),
             ("activity", json!(machine.activity)),
+            (
+                "actions",
+                json!((!machine.actions.is_empty()).then_some(&machine.actions)),
+            ),
+            (
+                "speed_override_range_pct",
+                json!(
+                    machine
+                        .speed_override_range_pct
+                        .filter(|[min, max]| min <= max)
+                ),
+            ),
+            (
+                "z_offset_range_mm",
+                json!(
+                    machine
+                        .z_offset_range_mm
+                        .filter(|[min, max]| min.is_finite() && max.is_finite() && min <= max)
+                ),
+            ),
             (
                 "print_speed_profile",
                 json!(
@@ -242,18 +318,30 @@ impl WireDetail {
             .devices
             .iter()
             .filter(|device| matches!(device.kind, K::Motion | K::MotionSettings));
-        let position = motion
+        let reported = motion
             .clone()
-            .find_map(|d| d.position_mm.filter(valid_position))
-            .or_else(|| {
-                motion.clone().find_map(|d| {
-                    d.readings
-                        .motion
-                        .as_ref()?
-                        .commanded_position_mm
-                        .filter(valid_position)
-                })
-            });
+            .find(|device| device.position_mm.is_some_and(|v| valid_position(&v)));
+        let commanded = |device: &crate::shared::workspace::Device| {
+            device
+                .readings
+                .motion
+                .as_ref()?
+                .commanded_position_mm
+                .filter(valid_position)
+        };
+        let commanded_source = if let Some(device) = reported {
+            (commanded(device) == device.position_mm).then_some(device)
+        } else {
+            motion.clone().find(|device| commanded(device).is_some())
+        };
+        let position = reported
+            .and_then(|device| device.position_mm)
+            .or_else(|| commanded_source.and_then(commanded));
+        out.technical = super::technical::project(
+            detail,
+            commanded_source,
+            job.is_some() && detail.print_objects_job == job,
+        );
         let settings = motion.filter_map(|device| device.readings.motion.as_ref());
         insert_group(
             &mut out.telemetry,
@@ -276,13 +364,17 @@ impl WireDetail {
         );
 
         let device = &machine.device;
-        let firmware = device.firmware_version.as_deref().or_else(|| {
-            machine
-                .software
-                .iter()
-                .find(|version| version.role == SoftwareRole::PrinterFirmware)
-                .map(|version| version.version.as_str())
-        });
+        let firmware = device
+            .firmware_version
+            .as_deref()
+            .and_then(|v| version_label(v, MAX_NAME_BYTES))
+            .or_else(|| {
+                machine
+                    .software
+                    .iter()
+                    .filter(|version| version.role == SoftwareRole::PrinterFirmware)
+                    .find_map(|version| version_label(&version.version, MAX_NAME_BYTES))
+            });
         out.device = fields([
             (
                 "reported_name",
@@ -311,10 +403,7 @@ impl WireDetail {
                         .and_then(|v| label(v, MAX_NAME_BYTES))
                 ),
             ),
-            (
-                "firmware_version",
-                json!(firmware.and_then(|v| label(v, MAX_NAME_BYTES))),
-            ),
+            ("firmware_version", json!(firmware)),
             (
                 "location_label",
                 json!(
@@ -340,7 +429,7 @@ impl WireDetail {
         let software: Vec<_> = machine
             .software
             .iter()
-            .filter(|version| label(&version.version, 512).is_some())
+            .filter(|version| version_label(&version.version, 512).is_some())
             .take(MAX_ELEMENTS)
             .collect();
         if !software.is_empty() {
@@ -371,7 +460,7 @@ impl WireDetail {
     }
 
     pub(in crate::cloud) fn extend_telemetry(&self, base: &mut Value) {
-        if self.telemetry.is_empty() && self.elements.is_empty() && self.part_fans.is_empty() {
+        if self.telemetry.is_empty() && self.elements.is_empty() && self.extra_elements.is_empty() {
             return;
         }
         let Some(telemetry) = base.as_object_mut() else {
@@ -393,16 +482,17 @@ impl WireDetail {
                 item.extend(fields.clone());
             }
         }
-        if !self.part_fans.is_empty()
-            && let Some(items) = telemetry
-                .get_mut("part_cooling_fans")
-                .and_then(Value::as_array_mut)
-        {
-            original.insert("part_cooling_fans".into(), Value::Array(items.clone()));
+        for (key, extra) in &self.extra_elements {
+            let Some(items) = telemetry.get_mut(*key).and_then(Value::as_array_mut) else {
+                continue;
+            };
+            original
+                .entry(*key)
+                .or_insert_with(|| Value::Array(items.clone()));
             let mut seen: BTreeSet<_> = items.iter().filter_map(element_id).collect();
-            for fan in &self.part_fans {
-                if items.len() < MAX_ELEMENTS && seen.insert(element_id(fan).unwrap_or_default()) {
-                    items.push(fan.clone());
+            for item in extra {
+                if items.len() < MAX_ELEMENTS && seen.insert(element_id(item).unwrap_or_default()) {
+                    items.push(item.clone());
                 }
             }
         }
@@ -455,9 +545,13 @@ fn insert_group(out: &mut Fields, key: &str, group: Fields) {
     }
 }
 
-fn label(text: &str, max_bytes: usize) -> Option<&str> {
+pub(super) fn label(text: &str, max_bytes: usize) -> Option<&str> {
     (!text.trim().is_empty() && text.len() <= max_bytes && !text.chars().any(char::is_control))
         .then_some(text)
+}
+
+pub(super) fn version_label(text: &str, max_bytes: usize) -> Option<&str> {
+    label(text, max_bytes).filter(|version| version.trim() != "?")
 }
 
 fn finite(value: Option<f64>) -> Option<f64> {
@@ -474,6 +568,39 @@ fn valid_position(position: &[f64; 3]) -> bool {
 
 pub(super) fn element_id(element: &Value) -> Option<u64> {
     element.get("id")?.as_u64()
+}
+
+pub(super) fn bound_alert_ids(wire: &mut Value) {
+    if !wire["PrinterAlerts"].is_array() {
+        return;
+    }
+    let mut remaining = LOCAL_MAX_TELEMETRY_BYTES.saturating_sub(wire.to_string().len());
+    let Some(alerts) = wire["PrinterAlerts"].as_array_mut() else {
+        return;
+    };
+    let alert_id = |alert: &Value| u32::try_from(element_id(alert)?).ok().map(ElementId);
+    for alert in alerts.iter_mut() {
+        if alert_id(alert).is_none()
+            && let (Some(category), Some(message)) =
+                (alert["category"].as_str(), alert["message"].as_str())
+        {
+            let id = ElementId::from_key(category, message, 0);
+            let bytes = r#","id":"#.len() + id.to_string().len();
+            if remaining >= bytes {
+                alert["id"] = json!(id);
+                remaining -= bytes;
+            }
+        }
+    }
+    let counts = super::technical::unique_ids(alerts.iter().filter_map(alert_id));
+    for alert in alerts {
+        if let Some(id) = alert_id(alert)
+            && counts.get(&id) != Some(&1)
+            && let Some(fields) = alert.as_object_mut()
+        {
+            fields.remove("id");
+        }
+    }
 }
 
 pub(super) fn bound_base_telemetry(wire: &mut Value) {

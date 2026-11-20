@@ -79,6 +79,7 @@ pub(crate) async fn run_driver(
         file_interest,
         requests,
         state: detail_sender,
+        cloud_summary: _,
     } = detail_io;
     drop((file_interest, requests));
     let OperationIo {
@@ -247,6 +248,7 @@ impl Session<'_> {
                     continue;
                 }
                 Some(command) = self.machine_actions.recv() => {
+                    if command.reply.is_closed() { continue; }
                     if pending.is_some() {
                         let _ = command.reply.send(ControlResult::Rejected(ControlError::Busy));
                         continue;

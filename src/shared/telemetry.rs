@@ -15,6 +15,22 @@ pub(crate) const MAX_LIGHTS: usize = 8;
 #[serde(transparent)]
 pub(crate) struct ElementId(pub(crate) u32);
 
+impl ElementId {
+    pub(crate) fn from_key(namespace: &str, key: &str, scope: u64) -> Self {
+        use sha2::{Digest, Sha256};
+
+        let digest = Sha256::new()
+            .chain_update(namespace.as_bytes())
+            .chain_update([0])
+            .chain_update(scope.to_le_bytes())
+            .chain_update(key.as_bytes())
+            .finalize();
+        Self(u32::from_le_bytes([
+            digest[0], digest[1], digest[2], digest[3],
+        ]))
+    }
+}
+
 impl std::fmt::Display for ElementId {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(formatter, "{}", self.0)
@@ -24,6 +40,8 @@ impl std::fmt::Display for ElementId {
 /// Structured printer or job alert with a common category and bounded message.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct PrinterAlert {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) id: Option<ElementId>,
     #[serde(rename = "category")]
     pub(crate) category: String,
     #[serde(rename = "message")]
@@ -33,6 +51,7 @@ pub(crate) struct PrinterAlert {
 impl PrinterAlert {
     pub(crate) fn new(category: impl Into<String>, message: impl Into<String>) -> Self {
         Self {
+            id: None,
             category: category.into(),
             message: message.into(),
         }

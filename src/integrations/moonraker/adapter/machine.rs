@@ -275,7 +275,7 @@ pub(super) fn populate(name: &str, v: &Value, result: &mut MachineReadings) {
     }
     if name == "mcu" || name.starts_with("mcu ") {
         result.controller = Some(ControllerReadings {
-            firmware_version: string(v, "mcu_version"),
+            firmware_version: string(v, "mcu_version").filter(|version| version.trim() != "?"),
             ..Default::default()
         });
     }

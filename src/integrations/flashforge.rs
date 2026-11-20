@@ -436,10 +436,15 @@ pub(crate) fn parse_detail_to_observation(
         .map(str::trim)
         .filter(|trimmed| !trimmed.is_empty() && *trimmed != "0");
     let alerts = if let Some(trimmed) = error_code {
-        Some(vec![PrinterAlert::new(
-            "print_error",
-            sanitize_message(trimmed, 512),
-        )])
+        let mut alert = PrinterAlert::new("print_error", sanitize_message(trimmed, 512));
+        if crate::shared::control::valid_label(trimmed, 64) {
+            alert.id = Some(crate::shared::telemetry::ElementId::from_key(
+                "print_error",
+                trimmed,
+                0,
+            ));
+        }
+        Some(vec![alert])
     } else if status == PrintStatus::Error {
         Some(vec![PrinterAlert::new(
             "print_error",
@@ -1700,7 +1705,9 @@ async fn run_detail_handler(
                 if command.reply.is_closed() { continue; }
                 let validation = {
                     let state = state_receiver.borrow();
-                    if command.submitted_at.elapsed() > Duration::from_secs(5)
+                    if command.remote.is_some() && !command.permits(&state, false) {
+                        Err(ControlError::InvalidState)
+                    } else if command.submitted_at.elapsed() > Duration::from_secs(5)
                         || command.job_target.as_ref().is_some_and(|job| !state.matches_machine_job_target(job)) {
                         Err(ControlError::StaleResource)
                     } else if last_operation_finished.is_some_and(|at| command.submitted_at <= at)

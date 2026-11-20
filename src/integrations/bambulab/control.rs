@@ -447,7 +447,7 @@ impl Pending {
             if state.connection != LanConnection::Connected {
                 return Err(ControlError::Disconnected);
             }
-            if !detail.live
+            if !command.permits(state, detail.live)
                 || !fresh_request(state, command.connection_epoch, command.submitted_at)
                 || command.job_target != Some(MachineJobTarget::Active(state.job_generation))
                 || state.machine_job_target() != MachineJobTarget::Active(state.job_generation)

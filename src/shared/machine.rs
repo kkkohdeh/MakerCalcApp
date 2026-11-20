@@ -303,6 +303,8 @@ pub(crate) struct MachineInfo {
     pub(crate) current_supply: Option<ResourceId>,
     /// Handles identify the currently observed alert, not arbitrary provider codes.
     pub(crate) alerts: Vec<ResourceId>,
+    #[serde(skip)]
+    pub(crate) acknowledgeable_alert: Option<(super::telemetry::ElementId, ResourceId)>,
     pub(crate) actions: Vec<MachineActionKind>,
     pub(crate) software: Vec<SoftwareVersion>,
 }
@@ -375,6 +377,8 @@ pub(crate) struct StorageVolume {
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct PrintObject {
     pub(crate) id: ResourceId,
+    #[serde(skip)]
+    pub(crate) telemetry_id: Option<super::telemetry::ElementId>,
     pub(crate) display_name: String,
     pub(crate) excluded: Option<bool>,
     pub(crate) current: Option<bool>,

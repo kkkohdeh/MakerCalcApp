@@ -579,10 +579,14 @@ impl Projection {
                     self.fan(state, target, role, None, Some(enabled));
                 }
             }
-            if state
-                .devices
-                .iter()
-                .any(|d| matches!(d.fan_role, Some(FanRole::Exhaust | FanRole::Recirculation)))
+            if [FanRole::Exhaust, FanRole::Recirculation]
+                .into_iter()
+                .all(|role| {
+                    state
+                        .devices
+                        .iter()
+                        .any(|fan| fan.fan_role == Some(role) && fan.enabled.is_some())
+                })
             {
                 info.actions.push(K::SetFanEnabled);
             }
@@ -630,12 +634,8 @@ impl Projection {
             error: None,
         };
         if self.product == Some(38) {
-            info.actions.extend([
-                K::HomeAxes,
-                K::MoveAxisRelative,
-                K::ExtrudeFilament,
-                K::AcknowledgePrinterAlert,
-            ]);
+            info.actions
+                .extend([K::HomeAxes, K::MoveAxisRelative, K::ExtrudeFilament]);
             for reading in poll.observation.filament_supplies.iter().flatten() {
                 if station.is_some_and(|station| {
                     station
@@ -705,10 +705,13 @@ impl Projection {
             if let Some(error) = detail
                 .error_code
                 .as_deref()
-                .filter(|e| valid_label(e, 64) && *e != "0")
+                .filter(|e| valid_label(e, 64) && e.trim() != "0")
             {
-                info.alerts
-                    .push(self.resource(Target::Alert(error.to_owned())));
+                let id = self.resource(Target::Alert(error.to_owned()));
+                info.actions.push(K::AcknowledgePrinterAlert);
+                info.alerts.push(id);
+                info.acknowledgeable_alert =
+                    Some((ElementId::from_key("print_error", error.trim(), 0), id));
             }
         }
         info.current_supply = info
@@ -1291,6 +1294,9 @@ impl Projection {
             MachineAction::AcknowledgePrinterAlert { alert_id } => {
                 if printing {
                     return Err(ControlError::InvalidState);
+                }
+                if !detail.machine.alerts.contains(alert_id) {
+                    return Err(ControlError::StaleResource);
                 }
                 match self.targets.get(alert_id) {
                     Some(Target::Alert(code)) => (

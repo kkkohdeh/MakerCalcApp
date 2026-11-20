@@ -248,6 +248,8 @@ pub(crate) struct PrintQueue {
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct QueueEntry {
     pub(crate) id: ResourceId,
+    #[serde(skip)]
+    pub(crate) telemetry_id: Option<ElementId>,
     pub(crate) display_name: String,
     pub(crate) added_at_unix_s: Option<f64>,
     pub(crate) waiting_s: Option<f64>,
@@ -295,6 +297,8 @@ pub(crate) struct DetailState {
     pub(crate) machine: super::machine::MachineInfo,
     pub(crate) storage: ReadResult<Vec<super::machine::StorageVolume>>,
     pub(crate) print_objects: ReadResult<Vec<super::machine::PrintObject>>,
+    #[serde(skip)]
+    pub(crate) print_objects_job: Option<(u64, u64)>,
 }
 
 impl DetailState {
@@ -319,6 +323,7 @@ impl DetailState {
             machine: super::machine::MachineInfo::default(),
             storage: ReadResult::default(),
             print_objects: ReadResult::default(),
+            print_objects_job: None,
         }
     }
 }
@@ -339,30 +344,35 @@ pub(crate) enum DetailRequest {
 #[derive(Clone)]
 pub(crate) struct DetailHandle {
     pub(crate) active: watch::Sender<bool>,
+    pub(crate) cloud_summary: watch::Sender<bool>,
     pub(crate) file_interest: watch::Sender<FileReadInterest>,
     pub(crate) requests: mpsc::Sender<DetailRequest>,
     pub(crate) state: watch::Receiver<Arc<DetailState>>,
 }
 pub(crate) struct DetailIo {
     pub(crate) active: watch::Receiver<bool>,
+    pub(crate) cloud_summary: watch::Receiver<bool>,
     pub(crate) file_interest: watch::Receiver<FileReadInterest>,
     pub(crate) requests: mpsc::Receiver<DetailRequest>,
     pub(crate) state: watch::Sender<Arc<DetailState>>,
 }
 pub(crate) fn make_detail_channels() -> (DetailHandle, DetailIo) {
     let (active, active_io) = watch::channel(false);
+    let (cloud_summary, cloud_summary_io) = watch::channel(false);
     let (file_interest, file_interest_io) = watch::channel(FileReadInterest::default());
     let (requests, request_io) = mpsc::channel(16);
     let (state_io, state) = watch::channel(Arc::new(DetailState::empty(0)));
     (
         DetailHandle {
             active,
+            cloud_summary,
             file_interest,
             requests,
             state,
         },
         DetailIo {
             active: active_io,
+            cloud_summary: cloud_summary_io,
             file_interest: file_interest_io,
             requests: request_io,
             state: state_io,
@@ -588,6 +598,35 @@ impl OperationHandle {
         action: super::control::MachineAction,
     ) -> Result<oneshot::Receiver<super::control::ControlResult>, super::control::ControlError>
     {
+        self.enqueue_machine_action(connection_epoch, job_target, action, None)
+    }
+
+    pub(crate) fn remote_machine_action(
+        &self,
+        state: &crate::state::PrinterState,
+        action: super::control::MachineAction,
+        remote: super::control::RemoteSession,
+    ) -> Result<oneshot::Receiver<super::control::ControlResult>, super::control::ControlError>
+    {
+        if !remote.permits(&action, state) {
+            return Err(super::control::ControlError::InvalidState);
+        }
+        self.enqueue_machine_action(
+            state.connection_epoch,
+            Some(state.machine_job_target()),
+            action,
+            Some(remote),
+        )
+    }
+
+    fn enqueue_machine_action(
+        &self,
+        connection_epoch: u64,
+        job_target: Option<crate::state::MachineJobTarget>,
+        action: super::control::MachineAction,
+        remote: Option<super::control::RemoteSession>,
+    ) -> Result<oneshot::Receiver<super::control::ControlResult>, super::control::ControlError>
+    {
         use super::control::{ControlError, MachineCommand};
         action.validate()?;
         if !self.state.borrow().allows_actions() {
@@ -604,6 +643,7 @@ impl OperationHandle {
                 job_target,
                 submitted_at: Instant::now(),
                 action,
+                remote,
                 reply,
             })
             .map_err(|error| match error {

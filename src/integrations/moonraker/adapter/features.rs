@@ -159,8 +159,9 @@ impl Projection {
                 vec![]
             };
         }
+        let lights_ready = self.state.lights.status == model::ReadStatus::Ready;
         for device in self.state.lights.value.iter_mut().flatten() {
-            device.actions = if device.enabled.is_some() {
+            device.actions = if lights_ready && device.enabled.is_some() {
                 vec![K::SetLightBrightness]
             } else {
                 vec![]
@@ -190,6 +191,7 @@ impl Projection {
                 .get(key)
                 .and_then(|r| r.data.as_ref())
                 .and_then(|v| limited_string(v, field, 128))
+                .filter(|version| version.trim() != "?")
             {
                 self.state
                     .machine
@@ -235,6 +237,7 @@ impl Projection {
                 .retain(|r, _| !matches!(r, Resource::PrintObject(_)));
         }
         self.object_job = job;
+        self.state.print_objects_job = source.print_objects_job;
         let Some(objects) = source.objects.get("exclude_object") else {
             self.state.print_objects = model::ReadResult::default();
             return;
@@ -253,6 +256,21 @@ impl Projection {
                         }
                         Some(PrintObject {
                             id: self.id(Resource::PrintObject(name.to_owned())),
+                            telemetry_id: source
+                                .print_objects_job
+                                .filter(|_| super::local::valid_gcode_identifier(name))
+                                .map(|job| {
+                                    use std::hash::{BuildHasher, RandomState};
+                                    use std::sync::LazyLock;
+
+                                    static JOB_SCOPE: LazyLock<RandomState> =
+                                        LazyLock::new(RandomState::new);
+                                    crate::shared::telemetry::ElementId::from_key(
+                                        "print_object",
+                                        name,
+                                        JOB_SCOPE.hash_one(job),
+                                    )
+                                }),
                             display_name: clean(name),
                             excluded: objects
                                 .get("excluded_objects")

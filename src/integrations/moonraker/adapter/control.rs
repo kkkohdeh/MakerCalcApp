@@ -196,12 +196,31 @@ pub(crate) struct PreparedControl {
     connection_epoch: u64,
     job_generation: u64,
     job_target: Option<crate::state::MachineJobTarget>,
+    remote: Option<crate::shared::control::RemoteSession>,
     submitted_at: Instant,
     file_key: Option<file_estimates::FileKey>,
     job: Option<(String, f64)>,
 }
 
 impl PreparedControl {
+    pub(in crate::integrations::moonraker) fn is_remote(&self) -> bool {
+        self.remote.is_some()
+    }
+
+    pub(in crate::integrations::moonraker) fn needs_queue_check(&self) -> bool {
+        self.is_remote() && matches!(self.action, A::RemoveQueuedPrint { .. })
+    }
+
+    pub(in crate::integrations::moonraker) fn permits(
+        &self,
+        state: &PrinterState,
+        local_active: bool,
+    ) -> bool {
+        self.remote
+            .as_ref()
+            .map_or(local_active, |remote| remote.permits(&self.action, state))
+    }
+
     pub(in crate::integrations::moonraker) fn response_timeout(&self) -> Duration {
         match self.action {
             A::RunCalibration { .. } => Duration::from_secs(15 * 60),
@@ -247,7 +266,7 @@ impl Projection {
         {
             return Err(E::StaleResource);
         }
-        if !self.state.live
+        if !command.permits(telemetry, self.state.live)
             || self
                 .observed_at
                 .is_none_or(|at| at.elapsed() > Duration::from_secs(30))
@@ -319,6 +338,7 @@ impl Projection {
             connection_epoch: telemetry.connection_epoch,
             job_generation: telemetry.job_generation,
             job_target: command.job_target.clone(),
+            remote: command.remote.clone(),
             file_key: id.and_then(|id| file_estimates::FileKey::current(&self.state, id)),
             job: self.object_job.clone(),
         };
@@ -421,6 +441,9 @@ pub(in crate::integrations::moonraker) fn build_request(
         return Err(E::InvalidState);
     }
     if !source.live || control.submitted_at.elapsed() > Duration::from_secs(2) {
+        return Err(E::InvalidState);
+    }
+    if !control.permits(telemetry, source.live) {
         return Err(E::InvalidState);
     }
     control.action.validate()?;
@@ -671,7 +694,7 @@ pub(in crate::integrations::moonraker) fn build_request(
         A::RenameFile { .. } => return Err(E::Unsupported),
         A::RemoveQueuedPrint { .. } => {
             require_idle()?;
-            let Some(Resource::QueueItem(uid)) = &control.target else {
+            let Some(Resource::QueueItem { uid, added_at }) = &control.target else {
                 return Err(E::StaleResource);
             };
             if !source
@@ -681,9 +704,13 @@ pub(in crate::integrations::moonraker) fn build_request(
                 .and_then(|r| r.data.as_ref())
                 .and_then(|v| v.get("queued_jobs"))
                 .and_then(Value::as_array)
-                .is_some_and(|a| {
-                    a.iter()
-                        .any(|v| v.get("job_id").and_then(Value::as_str) == Some(uid))
+                .is_some_and(|jobs| {
+                    let mut matching = jobs
+                        .iter()
+                        .filter(|job| job.get("job_id").and_then(Value::as_str) == Some(uid));
+                    matching.next().is_some_and(|job| {
+                        positive(job, "time_added").map(f64::to_bits) == *added_at
+                    }) && matching.next().is_none()
                 })
             {
                 return Err(E::StaleResource);
@@ -704,6 +731,12 @@ pub(in crate::integrations::moonraker) fn build_request(
         A::ExcludePrintObject { .. } => {
             if !printing {
                 return Err(E::InvalidState);
+            }
+            if control.remote.is_some()
+                && source.print_objects_job
+                    != Some((telemetry.connection_epoch, telemetry.job_generation))
+            {
+                return Err(E::StaleResource);
             }
             need_command(source, "EXCLUDE_OBJECT")?;
             let Some(Resource::PrintObject(name)) = &control.target else {

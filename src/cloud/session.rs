@@ -19,7 +19,7 @@ use url::Url;
 use super::history::HistorySession;
 use super::planner::{ObservedPrinter, Planner};
 use super::thumbnails::ThumbnailSession;
-use super::wire::{CommandAction, ServerMessage, decode_server_message, valid_remote_id};
+use super::wire::{Command, CommandAction, ServerMessage, decode_server_message, valid_remote_id};
 use super::{
     ACK_TIMEOUT, CONNECT_TIMEOUT, CloudConfig, CloudRegistry, CloudStatus, CloudView,
     HISTORY_POLL_INTERVAL, INCOMPATIBLE_RETRY, LOCAL_MAX_MESSAGE_BYTES, PING_INTERVAL,
@@ -306,6 +306,10 @@ pub(super) async fn run_session(
     let mut history = HistorySession::new(ready.3, planner.limits.min_interval);
     let _history_persist = ready.4; // Server cursors select history in both storage modes.
     let mut thumbnails = ThumbnailSession::new(ready.5);
+    let mut summary = SummarySubscriptions::default();
+    summary.update(&registry.borrow());
+    let remote_session = std::sync::Arc::new(());
+    let mut remote_replies = std::collections::BTreeMap::new();
     sync_registry_with_thumbnails(planner, registry, Instant::now(), Some(&thumbnails));
     let mut ticks = interval(Duration::from_secs(1));
     let mut history_ticks = interval(HISTORY_POLL_INTERVAL);
@@ -510,9 +514,19 @@ pub(super) async fn run_session(
                         return SessionResult::Temporary(t!("settings.cloud.errors.connection").into_owned());
                     }
                     Ok(ServerMessage::HistoryCursors { v: SCHEMA_VERSION, cursors }) => history.cursors(cursors),
-                    Ok(ServerMessage::Command { v, printer_id, action, role }) => {
-                        if v == SCHEMA_VERSION {
-                            dispatch_command(&registry.borrow(), &printer_id, action, role.as_deref());
+                    Ok(ServerMessage::Command { v, printer_id, action, params }) => {
+                        if v == SCHEMA_VERSION
+                            && let Some(command) = Command::parse(action, params)
+                        {
+                            let registry = registry.borrow();
+                            match command {
+                                Command::PausePrint => dispatch_command(&registry, &printer_id, CommandAction::PausePrint, None),
+                                Command::ResumePrint => dispatch_command(&registry, &printer_id, CommandAction::ResumePrint, None),
+                                Command::CancelPrint => dispatch_command(&registry, &printer_id, CommandAction::CancelPrint, None),
+                                Command::ToggleLight { role } => dispatch_command(&registry, &printer_id, CommandAction::ToggleLight, Some(&role)),
+                                Command::Unknown => {}
+                                command => dispatch_machine_command(&registry, &printer_id, command, &remote_session, &mut remote_replies),
+                            }
                         }
                     },
                     Ok(ServerMessage::Unknown) => {},
@@ -523,6 +537,7 @@ pub(super) async fn run_session(
                 if changed.is_err() {
                     return SessionResult::Stopped;
                 }
+                summary.update(&registry.borrow());
                 thumbnails.observe(&registry.borrow(), &history.announced, Instant::now());
                 sync_registry_with_thumbnails(planner, registry, Instant::now(), Some(&thumbnails));
                 request_history_totals(registry);
@@ -538,6 +553,88 @@ pub(super) async fn run_session(
                     return SessionResult::Stopped;
                 }
             }
+        }
+    }
+}
+
+type RemoteReplies = std::collections::BTreeMap<
+    crate::state::LocalPrinterId,
+    tokio::sync::oneshot::Receiver<crate::shared::control::ControlResult>,
+>;
+
+fn dispatch_machine_command(
+    registry: &CloudRegistry,
+    printer_id: &str,
+    command: Command,
+    session: &std::sync::Arc<()>,
+    replies: &mut RemoteReplies,
+) {
+    replies.retain(|_, reply| {
+        matches!(
+            reply.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        )
+    });
+    let Some(printer) = registry
+        .printers
+        .iter()
+        .take(250)
+        .find(|printer| printer.cloud_printer_id == printer_id)
+    else {
+        return;
+    };
+    if replies.len() >= 32 || replies.contains_key(&printer.id) {
+        return;
+    }
+    let state = printer.receiver.borrow();
+    if state.connection != LanConnection::Connected
+        || !state.telemetry_ready
+        || !state.controls.remote
+        || state
+            .last_valid_at
+            .is_none_or(|at| at.elapsed() > Duration::from_secs(15))
+    {
+        return;
+    }
+    let detail = printer.detail.state.borrow();
+    let Some(action) = command.resolve(&detail, &state) else {
+        return;
+    };
+    let permit = crate::shared::control::RemoteSession(std::sync::Arc::downgrade(session));
+    if let Ok(reply) = printer
+        .operation
+        .remote_machine_action(&state, action, permit)
+    {
+        replies.insert(printer.id, reply);
+    }
+}
+
+#[derive(Default)]
+struct SummarySubscriptions(
+    std::collections::BTreeMap<(crate::state::LocalPrinterId, u64), watch::Sender<bool>>,
+);
+
+impl SummarySubscriptions {
+    fn update(&mut self, registry: &CloudRegistry) {
+        let mut previous = std::mem::take(&mut self.0);
+        for printer in registry.printers.iter().take(250) {
+            let key = (printer.id, printer.generation);
+            let sender = previous.remove(&key).unwrap_or_else(|| {
+                printer.detail.cloud_summary.send_replace(true);
+                printer.detail.cloud_summary.clone()
+            });
+            self.0.insert(key, sender);
+        }
+        for sender in previous.into_values() {
+            sender.send_replace(false);
+        }
+    }
+}
+
+impl Drop for SummarySubscriptions {
+    fn drop(&mut self) {
+        for sender in self.0.values() {
+            sender.send_replace(false);
         }
     }
 }
@@ -659,7 +756,15 @@ pub(super) fn sync_registry_with_thumbnails(
                 thumbnail_sha256: thumbnail_sha256.map(str::to_owned),
                 thumbnail_supported,
                 detail_source: std::sync::Arc::downgrade(&detail),
-                detail: super::wire::WireDetail::project(&detail, &state.telemetry),
+                detail: super::wire::WireDetail::project(
+                    &detail,
+                    &state.telemetry,
+                    matches!(
+                        state.machine_job_target(),
+                        crate::state::MachineJobTarget::Active(_)
+                    )
+                    .then_some((state.connection_epoch, state.job_generation)),
+                ),
             },
             now,
         );

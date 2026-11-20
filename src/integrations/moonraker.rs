@@ -248,6 +248,8 @@ impl StatusParser {
 struct DetailSession {
     generation: u64,
     active: bool,
+    local_view: Option<watch::Receiver<bool>>,
+    observed_job: Option<(u64, u64)>,
     cache: DetailCache,
     state: DetailState,
     objects: Vec<String>,
@@ -264,10 +266,26 @@ struct DetailSession {
 }
 
 struct PendingControl {
-    id: u64,
+    request: PendingControlRequest,
     kind: local::PrinterActionKind,
     deadline: tokio::time::Instant,
     state: watch::Sender<OperationState>,
+}
+
+enum PendingControlRequest {
+    Sent(u64),
+    CheckingQueue(u64, Box<adapter::control::PreparedControl>),
+    QueueChecked(Box<adapter::control::PreparedControl>),
+}
+
+impl PendingControl {
+    fn awaits(&self, id: u64) -> bool {
+        matches!(self.request, PendingControlRequest::Sent(expected) | PendingControlRequest::CheckingQueue(expected, _) if expected == id)
+    }
+
+    fn queue_checked(&self) -> bool {
+        matches!(self.request, PendingControlRequest::QueueChecked(_))
+    }
 }
 
 async fn wait_for_control_timeout(control: Option<&PendingControl>) {
@@ -294,6 +312,8 @@ impl DetailSession {
         Self {
             generation,
             active: false,
+            local_view: None,
+            observed_job: None,
             cache: DetailCache::new(generation, DETAIL_MAX_BYTES),
             state: DetailState::empty(generation),
             objects: Vec::new(),
@@ -320,6 +340,7 @@ impl DetailSession {
     fn clear(&mut self) {
         self.active = false;
         self.cache.reset(self.generation);
+        self.observed_job = None;
         self.state = DetailState::empty(self.generation);
         self.pending_deltas.clear();
         self.firmware_request = None;
@@ -328,6 +349,8 @@ impl DetailSession {
     fn reset_overview(&mut self, active: bool) {
         self.active = active;
         self.cache.reset(self.generation);
+        self.observed_job = None;
+        self.state.print_objects_job = None;
         self.state.objects = json!({});
         self.state
             .sections
@@ -560,6 +583,7 @@ async fn connect_once(
     // A watch value survives reconnects even when its change was already consumed.
     // Restore the user's current screen before the first RPC, not only on changed().
     detail.active = *detail_io.active.borrow_and_update();
+    detail.local_view = detail_io.local_view.clone();
     let file_reader = make_file_reader(config)?;
     publish_detail(detail_io, &mut detail);
     let mut next_id = 1_u64;
@@ -775,6 +799,9 @@ async fn event_loop(
             biased;
             changed = shutdown.changed() => if changed.is_err() || *shutdown.borrow() { return Ok(()); },
             _ = wait_for_control_timeout(detail.pending_control.as_ref()) => detail.mark_control_unknown(),
+            () = std::future::ready(()), if detail.pending_control.as_ref().is_some_and(PendingControl::queue_checked) => {
+                send_checked_queue_removal(socket, next_id, state, detail).await?;
+            },
             changed = detail_io.active.changed() => {
                 if changed.is_err() { return Ok(()); }
                 let expand = *detail_io.active.borrow();
@@ -1125,7 +1152,7 @@ async fn send_printer_action(
         start_upload(file_reader, operation_io, source, destination);
         return Ok(());
     }
-    let request = match runtime_control_request(*next_id, &action, detail, state) {
+    let mut request = match runtime_control_request(*next_id, &action, detail, state) {
         Ok(request) => request,
         Err(error) => {
             let _ = operation_io.state.send_replace(OperationState::Rejected {
@@ -1134,6 +1161,14 @@ async fn send_printer_action(
             });
             return Ok(());
         }
+    };
+    let deadline = tokio::time::Instant::now() + action_response_timeout(&action);
+    let pending = match action {
+        PrinterAction::MachineControl { control } if control.needs_queue_check() => {
+            request = json!({"jsonrpc":"2.0", "method":"server.job_queue.status", "id":*next_id});
+            PendingControlRequest::CheckingQueue(*next_id, control)
+        }
+        _ => PendingControlRequest::Sent(*next_id),
     };
     operation_io
         .state
@@ -1145,11 +1180,49 @@ async fn send_printer_action(
         return Err(error);
     }
     detail.pending_control = Some(PendingControl {
-        id: *next_id,
+        request: pending,
         kind,
-        deadline: tokio::time::Instant::now() + action_response_timeout(&action),
+        deadline,
         state: operation_io.state.clone(),
     });
+    *next_id += 1;
+    Ok(())
+}
+
+async fn send_checked_queue_removal(
+    socket: &mut MoonrakerSocket,
+    next_id: &mut u64,
+    state: &PrinterState,
+    detail: &mut DetailSession,
+) -> Result<(), MoonrakerError> {
+    let Some(mut pending) = detail
+        .pending_control
+        .take_if(|control| control.queue_checked())
+    else {
+        return Ok(());
+    };
+    let PendingControlRequest::QueueChecked(control) = pending.request else {
+        unreachable!();
+    };
+    let action = PrinterAction::MachineControl { control };
+    let request = match runtime_control_request(*next_id, &action, detail, state) {
+        Ok(request) => request,
+        Err(error) => {
+            pending.state.send_replace(OperationState::Rejected {
+                action: pending.kind,
+                message: error.to_string(),
+            });
+            return Ok(());
+        }
+    };
+    if let Err(error) = send_value(socket, &request).await {
+        pending
+            .state
+            .send_replace(OperationState::Unknown(pending.kind));
+        return Err(error);
+    }
+    pending.request = PendingControlRequest::Sent(*next_id);
+    detail.pending_control = Some(pending);
     *next_id += 1;
     Ok(())
 }
@@ -1245,9 +1318,29 @@ fn runtime_control_request(
     state: &PrinterState,
 ) -> Result<Value, local::ControlError> {
     match action {
-        PrinterAction::MachineControl { control } if detail.active => {
-            adapter::control::build_request(id, control, &detail.state, state)
-                .map_err(|_| local::ControlError::Machine)
+        PrinterAction::MachineControl { control }
+            if detail.active
+                && control.permits(
+                    state,
+                    detail.local_view.as_ref().is_none_or(|view| *view.borrow()),
+                ) =>
+        {
+            let request = adapter::control::build_request(id, control, &detail.state, state)
+                .map_err(|_| local::ControlError::Machine)?;
+            if control.is_remote()
+                && let Some(command) = request
+                    .pointer("/params/script")
+                    .and_then(Value::as_str)
+                    .and_then(|script| script.split_ascii_whitespace().next())
+                && detail.objects.iter().any(|object| {
+                    object.split_once(' ').is_some_and(|(kind, name)| {
+                        kind == "gcode_macro" && name.eq_ignore_ascii_case(command)
+                    })
+                })
+            {
+                return Err(local::ControlError::Machine);
+            }
+            Ok(request)
         }
         PrinterAction::MachineControl { .. } => Err(local::ControlError::Machine),
         _ => build_control_request(id, action),
@@ -1740,6 +1833,9 @@ async fn wait_for_detail_reply(
             },
             _ = tokio::time::sleep_until(deadline) => return Err(MoonrakerError::RequestTimeout),
             _ = wait_for_control_timeout(detail.pending_control.as_ref()) => detail.mark_control_unknown(),
+            () = std::future::ready(()), if detail.pending_control.as_ref().is_some_and(PendingControl::queue_checked) => {
+                send_checked_queue_removal(socket, next_id, state, detail).await?;
+            },
             action = operation_io.actions.recv(), if detail.pending_control.is_none() => {
                 let Some(action) = action else { return Err(MoonrakerError::Cancelled); };
                 send_printer_action(socket, next_id, state, detail, file_reader, operation_io, action).await?;
@@ -1946,10 +2042,29 @@ fn apply_notification(
         publish_detail(detail_io, detail);
         return Ok(SessionSignal::Continue);
     }
-    if let Some(control) = detail
-        .pending_control
-        .take_if(|control| value.get("id").and_then(Value::as_u64) == Some(control.id))
-    {
+    if let Some(mut control) = detail.pending_control.take_if(|control| {
+        value
+            .get("id")
+            .and_then(Value::as_u64)
+            .is_some_and(|id| control.awaits(id))
+    }) {
+        if tokio::time::Instant::now() < control.deadline
+            && let PendingControlRequest::CheckingQueue(_, prepared) = &mut control.request
+            && let Some(queue) = value
+                .get("result")
+                .filter(|result| result.get("queued_jobs").is_some_and(Value::is_array))
+        {
+            detail.set_section(
+                adapter::QUEUE.to_owned(),
+                SectionStatus::Ready,
+                Some(redact(queue, api_key)),
+                None,
+            );
+            publish_detail(detail_io, detail);
+            control.request = PendingControlRequest::QueueChecked(prepared.clone());
+            detail.pending_control = Some(control);
+            return Ok(SessionSignal::Continue);
+        }
         let kind = control.kind;
         let result = if tokio::time::Instant::now() >= control.deadline {
             OperationState::Unknown(kind)
@@ -1958,7 +2073,9 @@ fn apply_notification(
                 action: kind,
                 message: sanitize_message(&error.to_string(), 256),
             }
-        } else if value.get("result").is_some() {
+        } else if value.get("result").is_some()
+            && matches!(control.request, PendingControlRequest::Sent(_))
+        {
             OperationState::Accepted(kind)
         } else {
             OperationState::Unknown(kind)
@@ -2019,13 +2136,8 @@ fn apply_notification(
         }
         ParserEvent::Ignored => {}
     }
-    let safe = redact(status, api_key);
-    match detail
-        .cache
-        .apply_delta(detail.generation, eventtime, &safe)
-    {
+    match update_detail_objects(detail, state, eventtime, &redact(status, api_key)) {
         Ok(true) => {
-            detail.state.objects = detail.cache.objects().clone();
             detail.state.live = detail.active;
             publish_detail(detail_io, detail);
         }
@@ -2070,6 +2182,8 @@ fn apply_subscription_base(
         .send(state.clone())
         .map_err(|error| MoonrakerError::Transport(error.to_string()))?;
     detail.cache.reset(detail.generation);
+    detail.observed_job = Some((state.connection_epoch, state.job_generation));
+    detail.state.print_objects_job = None;
     let safe = redact(status, api_key);
     match detail
         .cache
@@ -2077,6 +2191,15 @@ fn apply_subscription_base(
     {
         Ok(true) => {
             detail.state.objects = detail.cache.objects().clone();
+            if safe.pointer("/exclude_object/objects").is_some()
+                && matches!(
+                    state.machine_job_target(),
+                    crate::state::MachineJobTarget::Active(_)
+                )
+            {
+                detail.state.print_objects_job =
+                    Some((state.connection_epoch, state.job_generation));
+            }
             detail.state.live = expanded;
             detail.set_section("telemetry".to_owned(), SectionStatus::Ready, None, None);
         }
@@ -2102,18 +2225,41 @@ fn apply_subscription_base(
             }
             ParserEvent::Ignored => {}
         }
-        let safe = redact(&delta, api_key);
-        if matches!(
-            detail
-                .cache
-                .apply_delta(detail.generation, eventtime, &safe),
-            Ok(true)
-        ) {
-            detail.state.objects = detail.cache.objects().clone();
-        }
+        let _ = update_detail_objects(detail, state, eventtime, &redact(&delta, api_key));
     }
     publish_detail(detail_io, detail);
     Ok(())
+}
+
+fn update_detail_objects(
+    detail: &mut DetailSession,
+    state: &PrinterState,
+    eventtime: f64,
+    delta: &Value,
+) -> Result<bool, DetailError> {
+    let job = (state.connection_epoch, state.job_generation);
+    if detail.observed_job != Some(job) {
+        detail.cache.clear_print_objects();
+        detail.observed_job = Some(job);
+        detail.state.print_objects_job = None;
+    }
+    let updated = detail
+        .cache
+        .apply_delta(detail.generation, eventtime, delta)?;
+    if updated {
+        detail.state.objects = detail.cache.objects().clone();
+        if delta
+            .pointer("/exclude_object/objects")
+            .is_some_and(Value::is_array)
+            && matches!(
+                state.machine_job_target(),
+                crate::state::MachineJobTarget::Active(_)
+            )
+        {
+            detail.state.print_objects_job = Some(job);
+        }
+    }
+    Ok(updated)
 }
 
 fn section_status_for_detail_error(error: &DetailError) -> SectionStatus {
@@ -2245,6 +2391,7 @@ fn publish_detail(io: &DetailIo, detail: &mut DetailSession) {
         generation: detail.state.generation,
         revision: detail.state.revision,
         live: detail.state.live,
+        print_objects_job: detail.state.print_objects_job,
         objects: detail.state.objects.clone(),
         sections: detail.state.sections.clone(),
     }));

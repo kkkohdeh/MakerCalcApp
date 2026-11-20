@@ -22,7 +22,7 @@ mod machine;
 static NEXT_RESOURCE: AtomicU64 = AtomicU64::new(1);
 const FILES: &str = "model:files";
 const TOTALS: &str = "model:totals";
-const QUEUE: &str = "model:queue";
+pub(super) const QUEUE: &str = "model:queue";
 const CAMERAS: &str = "model:cameras";
 const POWER: &str = "model:power";
 const LIGHTS: &str = "model:lights";
@@ -38,7 +38,7 @@ enum Resource {
     Camera(String),
     Device(String),
     Storage,
-    QueueItem(String),
+    QueueItem { uid: String, added_at: Option<u64> },
     PrintObject(String),
 }
 
@@ -231,6 +231,7 @@ impl Projection {
                 .and_then(|index| index.checked_add(1))
                 .map(crate::shared::telemetry::ElementId),
             Kind::Bed => Some(crate::shared::telemetry::ElementId(1)),
+            Kind::Fan if name == "fan" => Some(crate::shared::telemetry::ElementId(1)),
             Kind::Fan if name != "fan" => Some(super::telemetry_id_for_object(name)),
             Kind::TemperatureSensor if !name.starts_with("heater_generic ") => {
                 Some(super::telemetry_id_for_object(name))
@@ -310,7 +311,8 @@ impl Projection {
                         .get("klippy_state")
                         .and_then(Value::as_str)
                         .map(|s| s == "ready");
-                    self.state.system.software_version = string(value, "moonraker_version");
+                    self.state.system.software_version =
+                        string(value, "moonraker_version").filter(|version| version.trim() != "?");
                 }
             }
             FILES => {
@@ -418,10 +420,20 @@ impl Projection {
                                 {
                                     return None;
                                 }
+                                let added_at_unix_s = positive(job, "time_added");
+                                let added_at = added_at_unix_s.map(f64::to_bits);
                                 Some(model::QueueEntry {
-                                    id: self.id(Resource::QueueItem(uid.to_owned())),
+                                    id: self.id(Resource::QueueItem {
+                                        uid: uid.to_owned(),
+                                        added_at,
+                                    }),
+                                    telemetry_id: added_at.map(|scope| {
+                                        crate::shared::telemetry::ElementId::from_key(
+                                            "queue", uid, scope,
+                                        )
+                                    }),
                                     display_name: basename(filename),
-                                    added_at_unix_s: positive(job, "time_added"),
+                                    added_at_unix_s,
                                     waiting_s: positive(job, "time_in_queue"),
                                 })
                             })
@@ -430,7 +442,7 @@ impl Projection {
                 });
                 if let Some(queue) = &queue {
                     self.resources.retain(|r, id| {
-                        !matches!(r, Resource::QueueItem(_))
+                        !matches!(r, Resource::QueueItem { .. })
                             || queue.entries.iter().any(|e| e.id == *id)
                     });
                 }
@@ -501,6 +513,9 @@ impl Projection {
                                 d.locked_while_printing =
                                     v.get("locked_while_printing").and_then(Value::as_bool);
                                 if key == LIGHTS {
+                                    d.telemetry_id = Some(crate::shared::telemetry::ElementId(
+                                        super::telemetry_id_for_object(name).0 | (1 << 31),
+                                    ));
                                     d.output_pct = number(v, "brightness")
                                         .filter(|v| (0.0..=255.0).contains(v))
                                         .map(|v| v * 100.0 / 255.0);
@@ -1339,10 +1354,13 @@ pub(crate) async fn run_adapter_with_thumbnail(
         ));
     }
     let light_bindings = config.connection.light_bindings.clone();
-    let (detail, raw_detail_io) = raw::make_detail_channels();
+    let (detail, mut raw_detail_io) = raw::make_detail_channels();
     let (operation, raw_operation_io) = local::make_operation_channels();
     let (camera, raw_camera_io) = camera::make_camera_channels();
-    detail.active.send_replace(*detail_io.active.borrow());
+    raw_detail_io.local_view = Some(detail_io.active.clone());
+    detail
+        .active
+        .send_replace(*detail_io.active.borrow() || *detail_io.cloud_summary.borrow());
     let context = BridgeContext {
         shutdown: shutdown.clone(),
         telemetry: state.subscribe(),
@@ -1403,7 +1421,10 @@ async fn bridge(
     let mut job_generation = context.telemetry.borrow().job_generation;
     detail
         .active
-        .send_replace(*detail_io.active.borrow_and_update());
+        .send_replace(*detail_io.active.borrow_and_update() || *detail_io.cloud_summary.borrow());
+    let mut summary_tick = tokio::time::interval(std::time::Duration::from_secs(15));
+    summary_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut summary_generation = None;
     loop {
         if let Some(mut waiting) = pending_extrusion.take() {
             use crate::shared::control::{ControlError, ControlResult};
@@ -1478,23 +1499,38 @@ async fn bridge(
                     detail_io.state.send_replace(Arc::new(projection.state.clone()));
                 }
             }
-            changed = detail_io.active.changed() => {
+            changed = async {
+                tokio::select! {
+                    changed = detail_io.active.changed() => changed,
+                    changed = detail_io.cloud_summary.changed() => changed,
+                }
+            } => {
                 if changed.is_err() { break }
                 let active = *detail_io.active.borrow_and_update();
-                detail.active.send_replace(active);
+                let cloud = *detail_io.cloud_summary.borrow_and_update();
+                if cloud && summary_generation.is_none() { summary_tick.reset_immediately(); }
+                if !cloud { summary_generation = None; }
+                detail.active.send_if_modified(|requested| {
+                    let next = active || cloud;
+                    let changed = *requested != next;
+                    *requested = next;
+                    changed
+                });
                 if !active {
                     pending_extrusion = None;
                     estimate_jobs.abort_all();
+                    camera_io.state.send_replace(Arc::new(model::CameraState::empty()));
+                }
+                if !active && !cloud {
                     let generation = projection.state.generation;
                     let history_totals = projection.state.history_totals.clone();
                     projection = Projection::with_light_bindings(context.light_bindings.clone());
                     projection.state = model::DetailState::empty(generation);
                     projection.state.history_totals = history_totals;
                     detail_io.state.send_replace(Arc::new(projection.state.clone()));
-                    camera_io.state.send_replace(Arc::new(model::CameraState::empty()));
                 } else {
                     let connected = context.telemetry.borrow().connection == crate::state::LanConnection::Connected;
-                    let live = connected && detail.state.borrow().live;
+                    let live = active && connected && detail.state.borrow().live;
                     if projection.state.live != live {
                         projection.state.live = live;
                         detail_io.state.send_replace(Arc::new(projection.state.clone()));
@@ -1508,7 +1544,7 @@ async fn bridge(
             changed = detail.state.changed() => {
                 if changed.is_err() { break }
                 let source = detail.state.borrow_and_update().clone();
-                if !*detail_io.active.borrow() {
+                if !*detail.active.borrow() {
                     if let Some(entry) = source.sections.get(TOTALS) {
                         let old = projection.state.history_totals.value.clone();
                         projection.section(TOTALS, entry);
@@ -1519,13 +1555,36 @@ async fn bridge(
                     }
                     continue
                 }
+                if *detail_io.cloud_summary.borrow() && source.live
+                    && summary_generation != Some(source.generation) {
+                    summary_tick.reset_immediately();
+                }
                 if projection.state.generation != source.generation {
                     estimate_jobs.abort_all();
                     camera_io.state.send_replace(Arc::new(model::CameraState::empty()));
                 }
                 projection.update(source);
-                projection.state.live &= context.telemetry.borrow().connection == crate::state::LanConnection::Connected;
+                projection.state.live &= *detail_io.active.borrow()
+                    && context.telemetry.borrow().connection == crate::state::LanConnection::Connected;
                 detail_io.state.send_replace(Arc::new(projection.state.clone()));
+            }
+            _ = summary_tick.tick(), if *detail_io.cloud_summary.borrow() => {
+                let source = detail.state.borrow();
+                if !source.live
+                    || !source.sections.get("telemetry").is_some_and(|entry| entry.status == raw::SectionStatus::Ready)
+                    || !context.telemetry.borrow().telemetry_ready
+                {
+                    continue;
+                }
+                if summary_generation != Some(source.generation)
+                    && projection.enqueue_read(&model::DetailRequest::RefreshMachine, &detail.requests).is_ok()
+                    && projection.enqueue_read(&model::DetailRequest::Cameras, &detail.requests).is_ok()
+                {
+                    summary_generation = Some(source.generation);
+                }
+                for request in [model::DetailRequest::Queue, model::DetailRequest::Peripherals] {
+                    let _ = projection.enqueue_read(&request, &detail.requests);
+                }
             }
             changed = operations.state.changed() => {
                 if changed.is_err() { break }
@@ -1565,7 +1624,7 @@ async fn bridge(
                 operation_io.state.send_replace(state);
                 // Read back only the affected area; never replay a physical action.
                 if let Some(request) = refresh
-                    && *detail_io.active.borrow()
+                    && (*detail_io.active.borrow() || (machine_control && *detail_io.cloud_summary.borrow()))
                     && context.telemetry.borrow().connection == crate::state::LanConnection::Connected {
                     if let Err(message) = projection.enqueue_read(&request, &detail.requests) {
                         projection.request_error(&request, message);
@@ -1620,6 +1679,10 @@ async fn bridge(
             Some(command) = operation_io.machine_actions.recv() => {
                 use crate::shared::control::{ControlError, ControlResult};
                 if command.reply.is_closed() { continue; }
+                if !command.permits(&context.telemetry.borrow(), *detail_io.active.borrow()) {
+                    let _ = command.reply.send(ControlResult::Rejected(ControlError::InvalidState));
+                    continue;
+                }
                 let busy = pending_extrusion.is_some() || pending_control.is_some() || operations.state.borrow().is_pending() || operations.actions.capacity() != operations.actions.max_capacity();
                 let prepared = projection.prepare_control(&command, &context.telemetry.borrow(), busy);
                 match prepared {

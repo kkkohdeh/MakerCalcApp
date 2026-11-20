@@ -25,6 +25,7 @@ pub(crate) struct DetailHandle {
 }
 
 pub(crate) struct DetailIo {
+    pub(crate) local_view: Option<watch::Receiver<bool>>,
     pub(crate) active: watch::Receiver<bool>,
     pub(crate) requests: mpsc::Receiver<DetailRequest>,
     pub(crate) state: watch::Sender<Arc<DetailState>>,
@@ -85,6 +86,7 @@ pub(crate) struct DetailState {
     pub(crate) generation: u64,
     pub(crate) revision: u64,
     pub(crate) live: bool,
+    pub(crate) print_objects_job: Option<(u64, u64)>,
     pub(crate) objects: Value,
     pub(crate) sections: BTreeMap<String, SectionData>,
 }
@@ -95,6 +97,7 @@ impl DetailState {
             generation,
             revision: 0,
             live: false,
+            print_objects_job: None,
             objects: json!({}),
             sections: BTreeMap::new(),
         }
@@ -113,6 +116,7 @@ pub(crate) fn make_detail_channels() -> (DetailHandle, DetailIo) {
             state: state_receiver,
         },
         DetailIo {
+            local_view: None,
             active: active_receiver,
             requests: request_receiver,
             state: state_sender,
@@ -526,6 +530,16 @@ impl DetailCache {
 
     pub(crate) fn objects(&self) -> &Value {
         &self.objects
+    }
+
+    pub(crate) fn clear_print_objects(&mut self) {
+        if let Some(exclusion) = self
+            .objects
+            .get_mut("exclude_object")
+            .and_then(Value::as_object_mut)
+        {
+            exclusion.remove("objects");
+        }
     }
 
     #[cfg_attr(
