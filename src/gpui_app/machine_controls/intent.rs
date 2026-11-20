@@ -16,7 +16,7 @@ pub(super) fn control_device(printer: &PrinterEntry, id: ResourceId) -> Option<&
         .find(|device| device.id == id)
 }
 
-fn parse_decimal(value: &str) -> Result<f64, ControlError> {
+pub(super) fn parse_decimal(value: &str) -> Result<f64, ControlError> {
     value
         .trim()
         .replace(',', ".")

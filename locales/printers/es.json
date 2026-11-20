@@ -656,6 +656,8 @@
       "z_offset_range": "Compensación absoluta de %{min} a %{max} mm.",
       "z_offset_apply": "Aplicar compensación",
       "z_offset_unreported": "La impresora no informa la compensación actual",
+      "z_offset_raise": "Subir %{step} mm",
+      "z_offset_lower": "Bajar %{step} mm",
       "home": "Home",
       "clear_plate": "Confirmar cama vacía",
       "clear_plate_terminal": "Disponible al terminar o cancelar una impresión.",

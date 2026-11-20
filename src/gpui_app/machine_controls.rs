@@ -28,7 +28,7 @@ mod intent;
 mod motion;
 mod toolbar;
 
-use editor_fields::{fan_hint, fan_reading, speed_field};
+use editor_fields::{fan_hint, fan_reading, speed_field, z_offset_field};
 use intent::{action, control_device, fan_range};
 use toolbar::{localized_decimal, physical_block_message};
 
@@ -858,11 +858,11 @@ impl MakerCalcGpuiApp {
         });
         let field = match &editor.value {
             EditorValue::Confirm => None,
+            EditorValue::Input(input) if editor.z_range.is_some() => editor
+                .z_range
+                .map(|range| z_offset_field(input, range, disabled, cx)),
             EditorValue::Input(input) => Some(
                 Input::new(input)
-                    .when(z_range.is_some(), |input| {
-                        input.id("machine-z-offset-input")
-                    })
                     .when(auto_shutdown, |input| {
                         input.id("machine-auto-shutdown-delay")
                     })
@@ -875,8 +875,7 @@ impl MakerCalcGpuiApp {
                     })
                     .aria_label(if auto_shutdown {
                         t!("printers.controls.auto_shutdown_seconds").into_owned()
-                    } else if z_range.is_some()
-                        || printer_name
+                    } else if printer_name
                         || editor.extrusion_limit.is_some()
                         || editor.fan_range.is_some()
                     {

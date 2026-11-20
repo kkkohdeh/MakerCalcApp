@@ -656,6 +656,8 @@
       "z_offset_range": "Absolute offset from %{min} to %{max} mm.",
       "z_offset_apply": "Apply offset",
       "z_offset_unreported": "Current offset not reported",
+      "z_offset_raise": "Raise by %{step} mm",
+      "z_offset_lower": "Lower by %{step} mm",
       "home": "Home",
       "clear_plate": "Confirm build plate is clear",
       "clear_plate_terminal": "Available after a print completes or is cancelled.",
