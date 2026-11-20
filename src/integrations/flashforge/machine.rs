@@ -9,6 +9,7 @@ use crate::shared::machine::{
     PrinterIssueKind, SupplyBlock, SupplyControl, SupplyKind, SupplyOperation,
     SupplyOperationPhase, SupplyResource,
 };
+use crate::shared::telemetry::NozzleTelemetry;
 use crate::shared::workspace::{Camera, Device, DeviceKind};
 
 mod filament;
@@ -142,7 +143,7 @@ pub(super) struct Projection {
     current_slot: Option<u32>,
     pending_load: Option<filament::PendingLoad>,
     printing: bool,
-    motor_tcp_verified: Option<bool>,
+    motor_tcp: Option<motors::Model>,
 }
 
 fn label(value: Option<&str>, limit: usize) -> Option<String> {
@@ -237,14 +238,24 @@ impl Projection {
     }
 
     pub(super) fn needs_motor_probe(&self) -> bool {
-        self.motor_tcp_verified.is_none() && matches!(self.product, Some(35 | 36 | 38))
+        self.motor_tcp.is_none() && matches!(self.product, Some(35 | 36 | 38))
     }
 
-    pub(super) fn set_motor_support(&mut self, verified: bool, state: &mut DetailState) {
-        self.motor_tcp_verified = Some(verified);
-        if verified {
+    pub(super) fn set_motor_support(&mut self, model: motors::Model, state: &mut DetailState) {
+        self.motor_tcp = Some(model);
+        if model != motors::Model::Unsupported {
             state.machine.actions.push(K::DisableMotors);
         }
+        for device in &mut state.devices {
+            if device.actions.contains(&K::ExtrudeFilament) {
+                device.extrusion_speed_range_mm_s = self.extrusion_speed_range();
+            }
+        }
+    }
+
+    fn extrusion_speed_range(&self) -> Option<[f64; 2]> {
+        (self.product == Some(38) && self.motor_tcp == Some(motors::Model::Ad5x))
+            .then_some([0.5, crate::shared::control::MAX_EXTRUSION_SPEED_MM_S])
     }
     pub(super) fn http_only(&self) -> bool {
         matches!(self.product, Some(40 | 41))
@@ -273,6 +284,10 @@ impl Projection {
     pub(super) fn waiting_for_observation(&self) -> bool {
         self.dispatched_at
             .is_some_and(|sent| self.observed_at.is_none_or(|at| at <= sent))
+    }
+
+    pub(super) fn observed_at(&self) -> Option<Instant> {
+        self.observed_at
     }
 
     pub(super) fn update(
@@ -377,7 +392,11 @@ impl Projection {
             issues: issue(detail.error_code.as_deref()).into_iter().collect(),
             ..Default::default()
         };
-        if self.motor_tcp_verified == Some(true) && matches!(self.product, Some(35 | 36 | 38)) {
+        if matches!(
+            self.motor_tcp,
+            Some(motors::Model::Ad5x | motors::Model::Adventurer5m)
+        ) && matches!(self.product, Some(35 | 36 | 38))
+        {
             info.actions.push(K::DisableMotors);
         }
         if known {
@@ -755,6 +774,11 @@ impl Projection {
             device.output_at_full_control_pct = device.output_control_range_pct.map(|_| 100.0);
             if device.actions.contains(&K::ExtrudeFilament) {
                 device.extrusion_limit_mm = Some(crate::shared::control::MAX_EXTRUSION_MM);
+                device.extrusion_speed_range_mm_s = self.extrusion_speed_range();
+                device.extrusion_temperature_range_c = state
+                    .temperature_targets
+                    .contains(&HeaterKind::Nozzle)
+                    .then_some([180, HeaterKind::Nozzle.max_target_c()]);
                 device.extrusion_requires_material_idle = true;
                 device.can_extrude = device
                     .temperature_c
@@ -992,6 +1016,30 @@ impl Projection {
         if needs_idle && (!idle || material_busy) {
             return Err(ControlError::InvalidState);
         }
+        if let MachineAction::ExtrudeFilament {
+            nozzle_id,
+            target_c,
+            speed_mm_s,
+            ..
+        } = action
+        {
+            self.target(*nozzle_id, &Target::Nozzle)?;
+            detail
+                .machine
+                .idle_setting_availability(state.telemetry.print_state)?;
+            let nozzle = detail
+                .devices
+                .iter()
+                .find(|device| device.id == *nozzle_id)
+                .ok_or(ControlError::StaleResource)?;
+            action.validate_extrusion(nozzle)?;
+            if speed_mm_s.is_some() && self.extrusion_speed_range().is_none() {
+                return Err(ControlError::Unsupported);
+            }
+            if target_c.is_none() && nozzle.can_extrude != Some(true) {
+                return Err(ControlError::InvalidState);
+            }
+        }
         if matches!(action, MachineAction::DisableMotors)
             && (!detail.live
                 || !matches!(
@@ -1004,6 +1052,25 @@ impl Projection {
             return Err(ControlError::InvalidState);
         }
         Ok(())
+    }
+
+    pub(super) fn validate_extrusion_temperature(
+        nozzles: &[NozzleTelemetry],
+        target_c: Option<u16>,
+    ) -> Result<(), ControlError> {
+        let [nozzle] = nozzles else {
+            return Err(ControlError::StaleResource);
+        };
+        let hot = nozzle.is_active
+            && nozzle.nozzle_temp_c.is_some_and(|actual| {
+                (180.0..=300.0).contains(&actual)
+                    && target_c.is_none_or(|target| {
+                        let target = f64::from(target);
+                        nozzle.nozzle_target_temp_c == Some(target)
+                            && (actual - target).abs() <= 2.0
+                    })
+            });
+        hot.then_some(()).ok_or(ControlError::InvalidState)
     }
 
     pub(super) fn payload(
@@ -1043,21 +1110,18 @@ impl Projection {
                 ("moveCtrl_cmd", json!({"axis":axis,"delta":distance_mm}))
             }
             MachineAction::ExtrudeFilament {
-                nozzle_id,
                 length_mm,
+                speed_mm_s,
+                target_c,
                 ..
             } => {
-                self.target(*nozzle_id, &Target::Nozzle)?;
-                detail
-                    .machine
-                    .idle_setting_availability(state.telemetry.print_state)?;
-                let permitted = detail
-                    .devices
-                    .iter()
-                    .find(|d| d.id == *nozzle_id)
-                    .is_some_and(|d| d.can_extrude == Some(true));
-                if !permitted {
-                    return Err(ControlError::InvalidState);
+                if let Some(target) = target_c {
+                    return Ok(
+                        json!({"cmd":"temperatureCtl_cmd","args":{"rightNozzle":target,"platform":-200}}),
+                    );
+                }
+                if speed_mm_s.is_some() {
+                    return Err(ControlError::Unsupported);
                 }
                 ("extrudeCtrl_cmd", json!({"axis":"e","delta":length_mm}))
             }

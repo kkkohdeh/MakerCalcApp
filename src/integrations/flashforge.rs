@@ -1298,6 +1298,61 @@ async fn refresh_file_list(
     current_state.revision = current_state.revision.saturating_add(1);
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn dispatch_manual_tcp(
+    host: &str,
+    command: &crate::shared::control::MachineCommand,
+    heating_target_c: Option<u16>,
+    machine: &machine::Projection,
+    detail: &DetailState,
+    state: &watch::Receiver<PrinterState>,
+    polls: &watch::Receiver<Option<machine::PollDetails>>,
+    active: &watch::Receiver<bool>,
+    shutdown: &watch::Receiver<bool>,
+) -> crate::shared::control::ControlResult {
+    use crate::shared::control::{ControlError, ControlResult, MachineAction};
+
+    let authorize = || {
+        if *shutdown.borrow() || command.reply.is_closed() || !*active.borrow() {
+            return Err(ControlError::InvalidState);
+        }
+        let state = state.borrow();
+        if command
+            .job_target
+            .as_ref()
+            .is_some_and(|job| !state.matches_machine_job_target(job))
+        {
+            return Err(ControlError::StaleResource);
+        }
+        machine.validate_control(&command.action, &state, detail, command.connection_epoch)?;
+        let latest = polls.borrow();
+        let poll = latest.as_ref().ok_or(ControlError::StaleResource)?;
+        machine.validate_motor_poll(poll, command.connection_epoch, command.submitted_at)?;
+        if matches!(command.action, MachineAction::ExtrudeFilament { .. }) {
+            machine::Projection::validate_extrusion_temperature(
+                &state.telemetry.nozzles,
+                heating_target_c,
+            )?;
+            machine::Projection::validate_extrusion_temperature(
+                &poll.observation.nozzles,
+                heating_target_c,
+            )?;
+        }
+        Ok(())
+    };
+
+    match command.action {
+        MachineAction::DisableMotors => machine::motors::release(host, authorize).await,
+        MachineAction::ExtrudeFilament {
+            length_mm,
+            speed_mm_s: Some(speed),
+            target_c: None,
+            ..
+        } => machine::motors::extrude(host, length_mm, speed, authorize).await,
+        _ => ControlResult::Rejected(ControlError::Unsupported),
+    }
+}
+
 /// Runs the FlashForge detail request handler task.
 ///
 /// Dispatches `DetailIo` requests (such as `ListFiles` and `InspectFile`)
@@ -1323,6 +1378,7 @@ async fn run_detail_handler(
     let mut machine = machine::Projection::default();
     let mut last_operation_finished = None;
     let mut pending_motion = false;
+    let mut pending_extrusion: Option<crate::shared::control::ExtrusionWait> = None;
     let gcode_list_url = format!("http://{host}:{port}/gcodeList");
     let gcode_list_body = json!({
         "serialNumber": serial_number,
@@ -1331,6 +1387,74 @@ async fn run_detail_handler(
     .to_string();
 
     loop {
+        if let Some(mut waiting) = pending_extrusion.take() {
+            use crate::shared::control::{ControlError, ControlResult, MachineAction};
+            let ready = machine
+                .observed_at()
+                .ok_or(ControlError::InvalidState)
+                .and_then(|observed| {
+                    waiting.ready(&state_receiver.borrow(), &current_state, observed)
+                });
+            match ready {
+                Ok(false) => pending_extrusion = Some(waiting),
+                Ok(true) if history_receiver.has_changed().unwrap_or(true) => {
+                    pending_extrusion = Some(waiting);
+                }
+                Err(error) => {
+                    let _ = waiting.command.reply.send(ControlResult::Rejected(error));
+                    operation_io.state.send_replace(OperationState::Idle);
+                }
+                Ok(true) => {
+                    let (speed, target) = match waiting.command.action {
+                        MachineAction::ExtrudeFilament {
+                            speed_mm_s,
+                            target_c,
+                            ..
+                        } => (speed_mm_s, target_c),
+                        _ => (None, None),
+                    };
+                    let command = waiting.into_move();
+                    let result = if speed.is_some() {
+                        dispatch_manual_tcp(
+                            &host,
+                            &command,
+                            target,
+                            &machine,
+                            &current_state,
+                            &state_receiver,
+                            &history_receiver,
+                            &detail_io.active,
+                            &shutdown,
+                        )
+                        .await
+                    } else {
+                        let control_url = format!("http://{host}:{port}/control");
+                        let payload = machine.payload(
+                            &command.action,
+                            &state_receiver.borrow(),
+                            &current_state,
+                            command.connection_epoch,
+                        );
+                        match payload {
+                            Err(error) => ControlResult::Rejected(error),
+                            Ok(payload) => tokio::select! {
+                                biased;
+                                _ = shutdown.changed() => ControlResult::Unknown,
+                                result = machine::dispatch(&client, &control_url, &serial_number, &check_code, payload) => result,
+                            },
+                        }
+                    };
+                    last_operation_finished = Some(Instant::now());
+                    if matches!(result, ControlResult::Accepted | ControlResult::Unknown) {
+                        machine.dispatched(Instant::now());
+                    } else {
+                        operation_io.state.send_replace(OperationState::Idle);
+                    }
+                    let _ = command.reply.send(result);
+                    drain_queued_operations(&mut operation_io);
+                }
+            }
+        }
         tokio::select! {
             biased;
 
@@ -1348,6 +1472,7 @@ async fn run_detail_handler(
                 if !connected {
                     machine.abort_load(crate::shared::control::ControlResult::Unknown);
                     pending_motion = false;
+                    pending_extrusion = None;
                     if matches!(*operation_io.state.borrow(), OperationState::Sending(PrinterActionKind::MachineControl)) {
                         operation_io.state.send_replace(OperationState::Idle);
                     }
@@ -1395,12 +1520,12 @@ async fn run_detail_handler(
                     }
                     machine.update(details, state_receiver.borrow().connection_epoch, &host, &mut current_state);
                     if current_state.live && machine.needs_motor_probe() {
-                        let verified = machine::motors::probe(&host).await;
-                        machine.set_motor_support(verified, &mut current_state);
+                        let model = machine::motors::probe(&host).await;
+                        machine.set_motor_support(model, &mut current_state);
                     }
                     let motion_busy = pending_motion && current_state.machine.activity.is_some()
                         && !matches!(state_receiver.borrow().telemetry.print_state, PrintStatus::Printing | PrintStatus::Paused);
-                    if !machine.waiting_for_observation() && !motion_busy
+                    if pending_extrusion.is_none() && !machine.waiting_for_observation() && !motion_busy
                         && matches!(*operation_io.state.borrow(), OperationState::Sending(PrinterActionKind::MachineControl)) {
                         pending_motion = false;
                         operation_io.state.send_replace(OperationState::Idle);
@@ -1441,6 +1566,7 @@ async fn run_detail_handler(
                 let connected = state_receiver.borrow().connection == LanConnection::Connected;
                 let live = connected && active;
                 if !active {
+                    pending_extrusion = None;
                     pending_motion = false;
                     if matches!(*operation_io.state.borrow(), OperationState::Sending(PrinterActionKind::MachineControl)) {
                         operation_io.state.send_replace(OperationState::Idle);
@@ -1570,7 +1696,7 @@ async fn run_detail_handler(
             }
 
             Some(command) = operation_io.machine_actions.recv() => {
-                use crate::shared::control::{ControlError, ControlResult};
+                use crate::shared::control::{ControlError, ControlResult, MachineAction};
                 if command.reply.is_closed() { continue; }
                 let validation = {
                     let state = state_receiver.borrow();
@@ -1580,12 +1706,15 @@ async fn run_detail_handler(
                     } else if last_operation_finished.is_some_and(|at| command.submitted_at <= at)
                         || operation_io.state.borrow().is_pending() || !operation_io.actions.is_empty() {
                         Err(ControlError::Busy)
-                    } else if matches!(command.action, crate::shared::control::MachineAction::DisableMotors) {
+                    } else if matches!(command.action, MachineAction::DisableMotors
+                        | MachineAction::ExtrudeFilament { speed_mm_s: Some(_), target_c: None, .. }) {
                         machine.validate_control(&command.action, &state, &current_state, command.connection_epoch).map(|_| None)
                     } else {
                         machine.payload(&command.action, &state, &current_state, command.connection_epoch).map(Some)
                     }
                 };
+                let heating = matches!(command.action, crate::shared::control::MachineAction::ExtrudeFilament { target_c: Some(_), .. });
+                let job_generation = state_receiver.borrow().job_generation;
                 let source = machine.load_source(&command.action, &current_state);
                 let validation = validation.and_then(|payload| match source {
                     Some(supply_id) => machine.payload(&crate::shared::control::MachineAction::UnloadFilament { supply_id }, &state_receiver.borrow(), &current_state, command.connection_epoch).map(Some),
@@ -1603,18 +1732,10 @@ async fn run_detail_handler(
                                 result = machine::dispatch(&client, &url, &serial_number, &check_code, payload) => result,
                             },
                             // Finish bounded TCP cleanup even when the view or app closes.
-                            None => machine::motors::release(&host, || {
-                                if *shutdown.borrow() || command.reply.is_closed() || !*detail_io.active.borrow() {
-                                    return Err(ControlError::InvalidState);
-                                }
-                                machine.validate_control(&command.action, &state_receiver.borrow(), &current_state, command.connection_epoch)?;
-                                let latest = history_receiver.borrow();
-                                let poll = latest.as_ref().ok_or(ControlError::StaleResource)?;
-                                machine.validate_motor_poll(poll, command.connection_epoch, command.submitted_at)
-                            }).await,
+                            None => dispatch_manual_tcp(&host, &command, None, &machine, &current_state, &state_receiver, &history_receiver, &detail_io.active, &shutdown).await,
                         };
                         last_operation_finished = Some(Instant::now());
-                        if matches!(result, ControlResult::Accepted | ControlResult::Unknown) {
+                        if !heating && matches!(result, ControlResult::Accepted | ControlResult::Unknown) {
                             if matches!(command.action, crate::shared::control::MachineAction::CancelFilamentOperation { .. }) {
                                 machine.abort_load(ControlResult::Unknown);
                             }
@@ -1633,6 +1754,15 @@ async fn run_detail_handler(
                         result
                     }
                 };
+                if heating && result == ControlResult::Accepted {
+                    if let Some(observed) = machine.observed_at() {
+                        let mut waiting = crate::shared::control::ExtrusionWait::new(command, current_state.generation, job_generation, observed);
+                        waiting.accepted = true;
+                        pending_extrusion = Some(waiting);
+                        operation_io.state.send_replace(OperationState::Sending(PrinterActionKind::MachineControl));
+                    }
+                    continue;
+                }
                 if let (Some(source), crate::shared::control::MachineAction::LoadFilament { supply_id }, ControlResult::Accepted) = (source, &command.action, result) {
                     machine.defer_load(source, *supply_id, command.connection_epoch, dispatch_started, command.reply);
                 } else {
@@ -1652,6 +1782,12 @@ async fn run_detail_handler(
                 current_state.revision = current_state.revision.saturating_add(1);
                 detail_io.state.send_replace(Arc::new(current_state.clone()));
             }
+
+            _ = async {
+                if let Some(waiting) = &pending_extrusion {
+                    tokio::time::sleep_until(waiting.deadline().into()).await;
+                } else { std::future::pending::<()>().await; }
+            } => {}
 
             action_opt = operation_io.actions.recv() => {
                 let Some(action) = action_opt else {

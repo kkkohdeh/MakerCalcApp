@@ -1,4 +1,4 @@
-//! Closed, bounded TCP session for the documented FlashForge motor release.
+//! Bounded TCP sessions for manual motor control.
 use super::{ControlError, ControlResult};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -67,27 +67,37 @@ async fn exchange(stream: &mut TcpStream, command: &str) -> Reply {
     }
 }
 
-pub(in crate::integrations::flashforge) async fn probe(host: &str) -> bool {
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(in crate::integrations::flashforge) enum Model {
+    Ad5x,
+    Adventurer5m,
+    Unsupported,
+}
+
+pub(in crate::integrations::flashforge) async fn probe(host: &str) -> Model {
     probe_at(host, 8899).await
 }
 
-async fn probe_at(host: &str, port: u16) -> bool {
+async fn probe_at(host: &str, port: u16) -> Model {
     let Ok(mut stream) = connect(host, port).await else {
-        return false;
+        return Model::Unsupported;
     };
     let Ok(reply) = exchange(&mut stream, "M115").await.complete() else {
-        return false;
+        return Model::Unsupported;
     };
     reply
         .lines()
-        .filter_map(|line| line.strip_prefix("Machine Type:"))
-        .any(|model| {
-            let model = model.trim().to_ascii_lowercase();
-            matches!(
-                model.as_str(),
-                "flashforge adventurer 5m" | "flashforge adventurer 5m pro" | "flashforge ad5x"
-            )
+        .find_map(|line| {
+            let name = line.strip_prefix("Machine Type:")?.trim();
+            match name.to_ascii_lowercase().as_str() {
+                "flashforge ad5x" => Some(Model::Ad5x),
+                "flashforge adventurer 5m" | "flashforge adventurer 5m pro" => {
+                    Some(Model::Adventurer5m)
+                }
+                _ => None,
+            }
         })
+        .unwrap_or(Model::Unsupported)
 }
 
 pub(in crate::integrations::flashforge) async fn release(
@@ -100,6 +110,38 @@ pub(in crate::integrations::flashforge) async fn release(
 async fn release_at(
     host: &str,
     port: u16,
+    authorize: impl Fn() -> Result<(), ControlError>,
+) -> ControlResult {
+    run_idle_at(host, port, "M18", "CMD M18 Received.", authorize).await
+}
+
+pub(in crate::integrations::flashforge) async fn extrude(
+    host: &str,
+    length_mm: f64,
+    speed_mm_s: f64,
+    authorize: impl Fn() -> Result<(), ControlError>,
+) -> ControlResult {
+    extrude_at(host, 8899, length_mm, speed_mm_s, authorize).await
+}
+
+async fn extrude_at(
+    host: &str,
+    port: u16,
+    length_mm: f64,
+    speed_mm_s: f64,
+    authorize: impl Fn() -> Result<(), ControlError>,
+) -> ControlResult {
+    // The FlashForge server resets E before an E-only G1.
+    let feedrate = speed_mm_s * 60.0;
+    let command = format!("G1 E{length_mm} F{feedrate}");
+    run_idle_at(host, port, &command, "CMD G1 Received.", authorize).await
+}
+
+async fn run_idle_at(
+    host: &str,
+    port: u16,
+    command: &str,
+    acknowledgement: &str,
     authorize: impl Fn() -> Result<(), ControlError>,
 ) -> ControlResult {
     let mut stream = match connect(host, port).await {
@@ -115,7 +157,7 @@ async fn release_at(
     }
     let result = async {
         acquired.complete()?;
-        // Recheck physical rest after acquiring control, before releasing any driver.
+        // Recheck physical rest after acquiring control.
         let status = exchange(&mut stream, "M119").await.complete()?;
         let field = |prefix| {
             status
@@ -127,14 +169,14 @@ async fn release_at(
             return Err(ControlResult::Rejected(ControlError::InvalidState));
         }
         authorize().map_err(ControlResult::Rejected)?;
-        let reply = exchange(&mut stream, "M18").await.complete()?;
-        if !reply.contains("CMD M18 Received.") {
+        let reply = exchange(&mut stream, command).await.complete()?;
+        if !reply.contains(acknowledgement) {
             return Err(ControlResult::Unknown);
         }
         Ok(ControlResult::Accepted)
     }
     .await;
-    // Never retry M18, even when the acknowledgement or session cleanup is lost.
+    // An ambiguous acknowledgement never triggers another move.
     let cleanup = exchange(&mut stream, "M602").await.complete();
     match result {
         Err(result) => result,
