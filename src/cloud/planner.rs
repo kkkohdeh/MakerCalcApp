@@ -2,14 +2,15 @@ use crate::i18n::t;
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::sync::Weak;
 use std::time::{Duration, Instant};
 
-use super::wire::{WirePrinter, encode_batch, same_wire};
+use super::wire::{WireDetail, WirePrinter, encode_batch, same_wire};
 use super::{
     ACK_TIMEOUT, Device, LOCAL_MAX_MESSAGE_BYTES, LOCAL_MAX_PRINTERS, LOCAL_MAX_TELEMETRY_BYTES,
     MAX_INTERVAL_MS, MIN_INTERVAL_MS, REFRESH_WINDOW,
 };
-use crate::shared::workspace::HistoryTotals;
+use crate::shared::workspace::{DetailState, HistoryTotals};
 use crate::state::{LocalPrinterId, PrinterState};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -40,6 +41,8 @@ pub(super) struct ObservedPrinter {
     pub(super) device: Option<Device>,
     pub(super) thumbnail_sha256: Option<String>,
     pub(super) thumbnail_supported: bool,
+    pub(super) detail_source: Weak<DetailState>,
+    pub(super) detail: WireDetail,
 }
 
 #[derive(Clone)]
@@ -190,6 +193,7 @@ impl Planner {
                     || record.observed.thumbnail_sha256 != printer.thumbnail_sha256
                     || record.observed.thumbnail_supported != printer.thumbnail_supported
                     || record.observed.name != printer.name
+                    || record.observed.detail != printer.detail
                 {
                     record.last_observed_revision = printer.state.revision;
                     let encoded = self.encode_observed(&printer, now);
@@ -302,15 +306,13 @@ impl Planner {
             {
                 self.work.telemetry_serializations += usize::from(candidate.telemetry.is_some());
             }
-            let telemetry_bytes = candidate
+            let candidate = candidate
+                .payload()
+                .map_err(|_| PlannerError::InvalidLimits)?;
+            if candidate
                 .telemetry
                 .as_ref()
-                .map(serde_json::to_string)
-                .transpose()
-                .map_err(|_| PlannerError::InvalidLimits)?;
-            if telemetry_bytes
-                .as_ref()
-                .is_some_and(|json| json.len() > LOCAL_MAX_TELEMETRY_BYTES)
+                .is_some_and(|telemetry| telemetry.to_string().len() > LOCAL_MAX_TELEMETRY_BYTES)
             {
                 skipped.push((id, t!("settings.cloud.errors.telemetry_size")));
                 continue;

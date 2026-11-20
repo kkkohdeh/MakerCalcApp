@@ -1,6 +1,5 @@
 use std::time::Instant;
 
-use serde::ser::SerializeMap;
 use serde::{Deserialize, Serialize};
 use tokio_tungstenite::tungstenite::Message;
 
@@ -9,6 +8,9 @@ use super::planner::{ObservedPrinter, PlannerError};
 use super::{Device, LOCAL_MAX_MESSAGE_BYTES, SCHEMA_VERSION};
 use crate::shared::workspace::HistoryTotals;
 use crate::state::LanConnection;
+
+mod detail;
+pub(super) use detail::WireDetail;
 
 #[derive(Serialize)]
 pub(super) struct WireBatch<'a> {
@@ -28,45 +30,31 @@ pub(super) struct WirePrinter {
     pub(super) history_totals: Option<HistoryTotals>,
     pub(super) device: Option<Device>,
     pub(super) thumbnail_supported: bool,
+    pub(super) detail: WireDetail,
 }
 
 impl Serialize for WirePrinter {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut map = serializer.serialize_map(None)?;
-        map.serialize_entry("printer_id", &self.printer_id)?;
-        if let Some(name) = &self.name {
-            map.serialize_entry("name", name)?;
-        }
-        map.serialize_entry("connected", &self.connected)?;
-        if let Some(age) = self.age_ms {
-            map.serialize_entry("age_ms", &age)?;
-        }
-        if let Some(telemetry) = &self.telemetry {
-            if self.thumbnail_supported {
-                map.serialize_entry("telemetry", telemetry)?;
-            } else {
-                // Legacy peers reject unknown fields, including null.
-                let mut legacy =
-                    serde_json::to_value(telemetry).map_err(serde::ser::Error::custom)?;
-                for name in ["current_job", "last_job"] {
-                    if let Some(job) = legacy
-                        .get_mut(name)
-                        .and_then(serde_json::Value::as_object_mut)
-                    {
-                        job.remove("PrintThumbnailSha256");
-                    }
-                }
-                map.serialize_entry("telemetry", &legacy)?;
-            }
-        }
-        if let Some(totals) = &self.history_totals {
-            map.serialize_entry("history_totals", totals)?;
-        }
-        if let Some(device) = &self.device {
-            map.serialize_entry("device", device)?;
-        }
-        map.end()
+        self.payload()
+            .map_err(serde::ser::Error::custom)?
+            .serialize(serializer)
     }
+}
+
+#[derive(Serialize)]
+pub(super) struct PrinterPayload<'a> {
+    printer_id: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<&'a str>,
+    connected: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    age_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) telemetry: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    history_totals: Option<&'a HistoryTotals>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    device: Option<serde_json::Value>,
 }
 
 // Compare wire payloads; local-only changes must not trigger updates.
@@ -78,6 +66,42 @@ pub(super) fn same_wire(left: Option<&str>, right: Option<&str>) -> bool {
 }
 
 impl WirePrinter {
+    pub(super) fn payload(&self) -> serde_json::Result<PrinterPayload<'_>> {
+        let name = self.name.as_deref().map(str::trim).filter(|name| {
+            !name.is_empty() && name.len() <= 128 && !name.chars().any(char::is_control)
+        });
+        Ok(PrinterPayload {
+            printer_id: &self.printer_id,
+            name,
+            connected: self.connected,
+            age_ms: self.age_ms,
+            telemetry: self.telemetry_json()?,
+            history_totals: self.history_totals.as_ref(),
+            device: self.detail.device_json(self.device.as_ref()),
+        })
+    }
+
+    fn telemetry_json(&self) -> serde_json::Result<Option<serde_json::Value>> {
+        let Some(telemetry) = &self.telemetry else {
+            return Ok(None);
+        };
+        let mut wire = serde_json::to_value(telemetry)?;
+        if !self.thumbnail_supported {
+            // Legacy peers reject the thumbnail hash field, including null.
+            for name in ["current_job", "last_job"] {
+                if let Some(job) = wire
+                    .get_mut(name)
+                    .and_then(serde_json::Value::as_object_mut)
+                {
+                    job.remove("PrintThumbnailSha256");
+                }
+            }
+        }
+        detail::bound_base_telemetry(&mut wire);
+        self.detail.extend_telemetry(&mut wire);
+        Ok(Some(wire))
+    }
+
     pub(super) fn from_state(observed: &ObservedPrinter, now: Instant) -> Self {
         let is_fresh = observed.state.age_ms(now).is_none_or(|age| age <= 60_000);
         let telemetry = observed.state.snapshot.as_ref().map(|_| {
@@ -96,17 +120,23 @@ impl WirePrinter {
             }
             telemetry
         });
+        let connected = observed.state.connection == LanConnection::Connected
+            && observed.state.telemetry_ready
+            && is_fresh;
         Self {
             printer_id: observed.cloud_printer_id.clone(),
             name: Some(observed.name.clone()),
-            connected: observed.state.connection == LanConnection::Connected
-                && observed.state.telemetry_ready
-                && is_fresh,
+            connected,
             age_ms: observed.state.age_ms(now),
             telemetry,
             history_totals: observed.history_totals.clone(),
             device: observed.device.clone(),
             thumbnail_supported: observed.thumbnail_supported,
+            detail: if connected {
+                observed.detail.clone()
+            } else {
+                WireDetail::default()
+            },
         }
     }
 }

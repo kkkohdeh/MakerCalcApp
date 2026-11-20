@@ -635,6 +635,7 @@ pub(super) fn sync_registry_with_thumbnails(
             && record.last_observed_revision == state.revision
             && record.observed.name == printer.name
             && record.observed.history_totals == detail.history_totals.value
+            && record.observed.detail_source.as_ptr() == std::sync::Arc::as_ptr(&detail)
             && record.observed.device == printer.device
             && record.observed.thumbnail_sha256.as_deref() == thumbnail_sha256
             && record.observed.thumbnail_supported == thumbnail_supported
@@ -657,6 +658,8 @@ pub(super) fn sync_registry_with_thumbnails(
                 device: printer.device.clone(),
                 thumbnail_sha256: thumbnail_sha256.map(str::to_owned),
                 thumbnail_supported,
+                detail_source: std::sync::Arc::downgrade(&detail),
+                detail: super::wire::WireDetail::project(&detail),
             },
             now,
         );
