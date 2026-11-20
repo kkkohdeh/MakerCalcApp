@@ -12,3 +12,4 @@
 *.log
 *.capture.json
 *.exe
+/installer/
