@@ -90,6 +90,8 @@ pub(super) fn action(
             MachineAction::ExtrudeFilament {
                 nozzle_id,
                 length_mm,
+                speed_mm_s: None,
+                target_c: None,
             }
         }
         Control::ClearPlate => MachineAction::ConfirmBuildPlateCleared,

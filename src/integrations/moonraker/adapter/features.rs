@@ -141,6 +141,10 @@ impl Projection {
                     {
                         device.actions.push(K::ExtrudeFilament);
                         device.extrusion_limit_mm = control::extrusion_limit_mm(source, name);
+                        device.extrusion_speed_range_mm_s =
+                            control::extrusion_speed_range(source, name);
+                        device.extrusion_temperature_range_c =
+                            control::extrusion_temperature_range(source, name);
                     }
                     if pressure {
                         device.actions.push(K::SetPressureAdvance);

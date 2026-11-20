@@ -1045,6 +1045,7 @@ impl Projection {
             MachineAction::ExtrudeFilament {
                 nozzle_id,
                 length_mm,
+                ..
             } => {
                 self.target(*nozzle_id, &Target::Nozzle)?;
                 detail

@@ -130,6 +130,10 @@ pub(crate) struct Device {
     #[serde(skip)]
     pub(crate) extrusion_limit_mm: Option<f64>,
     #[serde(skip)]
+    pub(crate) extrusion_speed_range_mm_s: Option<[f64; 2]>,
+    #[serde(skip)]
+    pub(crate) extrusion_temperature_range_c: Option<[u16; 2]>,
+    #[serde(skip)]
     pub(crate) extrusion_requires_material_idle: bool,
     pub(crate) position_mm: Option<[f64; 3]>,
     pub(crate) velocity_mm_s: Option<f64>,
@@ -162,6 +166,8 @@ impl Device {
             filament_present: None,
             can_extrude: None,
             extrusion_limit_mm: None,
+            extrusion_speed_range_mm_s: None,
+            extrusion_temperature_range_c: None,
             extrusion_requires_material_idle: false,
             position_mm: None,
             velocity_mm_s: None,

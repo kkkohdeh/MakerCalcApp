@@ -141,6 +141,53 @@ pub(super) fn extrusion_limit_mm(source: &raw::DetailState, name: &str) -> Optio
     (limit.is_finite() && limit >= 0.0).then(|| limit.min(crate::shared::control::MAX_EXTRUSION_MM))
 }
 
+fn extrusion_settings<'a>(source: &'a raw::DetailState, name: &str) -> Option<&'a Value> {
+    source
+        .sections
+        .get(CONFIGURATION)
+        .filter(|section| section.status == raw::SectionStatus::Ready)?
+        .data
+        .as_ref()?
+        .pointer("/status/configfile/settings")?
+        .get(name)
+}
+
+pub(super) fn extrusion_speed_range(source: &raw::DetailState, name: &str) -> Option<[f64; 2]> {
+    let settings = extrusion_settings(source, name)?;
+    let maximum = match settings.get("max_extrude_only_velocity") {
+        Some(value) => value.as_f64()?,
+        None => {
+            let nozzle = positive(settings, "nozzle_diameter")?;
+            let filament = positive(settings, "filament_diameter")?;
+            let printer = extrusion_settings(source, "printer")?;
+            positive(printer, "max_velocity")? * 4. * nozzle.powi(2)
+                / (std::f64::consts::PI * (filament / 2.).powi(2))
+        }
+    };
+    (maximum.is_finite() && maximum >= 0.1).then_some([
+        0.1,
+        maximum.min(crate::shared::control::MAX_EXTRUSION_SPEED_MM_S),
+    ])
+}
+
+pub(super) fn extrusion_temperature_range(
+    source: &raw::DetailState,
+    name: &str,
+) -> Option<[u16; 2]> {
+    need_command(source, "SET_HEATER_TEMPERATURE").ok()?;
+    let settings = extrusion_settings(source, name)?;
+    let min = match settings.get("min_extrude_temp") {
+        Some(value) => value.as_f64()?,
+        None => 170.,
+    }
+    .ceil()
+    .max(180.);
+    let max = positive(settings, "max_temp")?
+        .floor()
+        .min(f64::from(model::HeaterKind::Nozzle.max_target_c()));
+    (min.is_finite() && max.is_finite() && min <= max).then_some([min as u16, max as u16])
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct PreparedControl {
     action: A,
@@ -471,7 +518,12 @@ pub(in crate::integrations::moonraker) fn build_request(
                 "SAVE_GCODE_STATE NAME=MAKERCALC_CONTROL\nG91\nM220 S100\nG1 {letter}{distance_mm} F{feedrate}\nRESTORE_GCODE_STATE NAME=MAKERCALC_CONTROL\nM400"
             ));
         }
-        A::ExtrudeFilament { length_mm, .. } => {
+        A::ExtrudeFilament {
+            length_mm,
+            speed_mm_s,
+            target_c,
+            ..
+        } => {
             require_idle()?;
             for c in EXTRUSION_COMMANDS {
                 need_command(source, c)?;
@@ -483,7 +535,6 @@ pub(in crate::integrations::moonraker) fn build_request(
                 .and_then(|v| v.get("extruder"))
                 .and_then(Value::as_str)
                 != Some(name)
-                || nozzle.get("can_extrude").and_then(Value::as_bool) != Some(true)
             {
                 return Err(E::InvalidState);
             }
@@ -491,9 +542,27 @@ pub(in crate::integrations::moonraker) fn build_request(
             if length_mm.abs() > limit {
                 return Err(E::InvalidData);
             }
-            script = Some(format!(
-                "SAVE_GCODE_STATE NAME=MAKERCALC_CONTROL\nM83\nM220 S100\nM221 S100\nG1 E{length_mm} F60\nRESTORE_GCODE_STATE NAME=MAKERCALC_CONTROL"
-            ));
+            if let Some(speed) = speed_mm_s {
+                let [min, max] = extrusion_speed_range(source, name).ok_or(E::Unsupported)?;
+                if !(min..=max).contains(speed) {
+                    return Err(E::InvalidData);
+                }
+            }
+            script = Some(if let Some(target) = target_c {
+                let [min, max] = extrusion_temperature_range(source, name).ok_or(E::Unsupported)?;
+                if !(min..=max).contains(target) {
+                    return Err(E::InvalidData);
+                }
+                format!("SET_HEATER_TEMPERATURE HEATER={name} TARGET={target}")
+            } else {
+                if nozzle.get("can_extrude").and_then(Value::as_bool) != Some(true) {
+                    return Err(E::InvalidState);
+                }
+                let feedrate = speed_mm_s.unwrap_or(1.) * 60.;
+                format!(
+                    "SAVE_GCODE_STATE NAME=MAKERCALC_CONTROL\nM83\nM220 S100\nM221 S100\nG1 E{length_mm} F{feedrate}\nRESTORE_GCODE_STATE NAME=MAKERCALC_CONTROL"
+                )
+            });
         }
         A::SetPrintSpeedOverride { percent } | A::SetFlowOverride { percent } => {
             if !active_or_idle {

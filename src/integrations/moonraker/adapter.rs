@@ -1399,11 +1399,52 @@ async fn bridge(
         tokio::sync::oneshot::Sender<crate::shared::control::ControlResult>,
     > = None;
     let mut pending_refresh = None;
+    let mut pending_extrusion: Option<crate::shared::control::ExtrusionWait> = None;
     let mut job_generation = context.telemetry.borrow().job_generation;
     detail
         .active
         .send_replace(*detail_io.active.borrow_and_update());
     loop {
+        if let Some(mut waiting) = pending_extrusion.take() {
+            use crate::shared::control::{ControlError, ControlResult};
+            let ready = projection
+                .observed_at
+                .ok_or(ControlError::InvalidState)
+                .and_then(|observed| {
+                    waiting.ready(&context.telemetry.borrow(), &projection.state, observed)
+                });
+            match ready {
+                Ok(false) => pending_extrusion = Some(waiting),
+                Err(error) => {
+                    let _ = waiting.command.reply.send(ControlResult::Rejected(error));
+                    operation_io.state.send_replace(model::OperationState::Idle);
+                }
+                Ok(true) => {
+                    let command = waiting.into_move();
+                    let result = projection
+                        .prepare_control(
+                            &command,
+                            &context.telemetry.borrow(),
+                            operations.state.borrow().is_pending(),
+                        )
+                        .and_then(|control| {
+                            operations
+                                .actions
+                                .try_send(local::PrinterAction::MachineControl {
+                                    control: Box::new(control),
+                                })
+                                .map_err(|_| ControlError::Busy)
+                        });
+                    match result {
+                        Ok(()) => pending_control = Some(command.reply),
+                        Err(error) => {
+                            let _ = command.reply.send(ControlResult::Rejected(error));
+                            operation_io.state.send_replace(model::OperationState::Idle);
+                        }
+                    }
+                }
+            }
+        }
         let deadline = if estimate_jobs.is_empty()
             && *detail_io.active.borrow()
             && context.telemetry.borrow().connection == crate::state::LanConnection::Connected
@@ -1426,7 +1467,7 @@ async fn bridge(
                     projection.state.print_objects = model::ReadResult::default();
                     projection.object_job = None;
                 }
-                if !connected { estimate_jobs.abort_all(); }
+                if !connected { estimate_jobs.abort_all(); pending_extrusion = None; }
                 if !connected && let Some(reply) = pending_control.take() {
                     pending_refresh = None;
                     let _ = reply.send(crate::shared::control::ControlResult::Unknown);
@@ -1442,6 +1483,7 @@ async fn bridge(
                 let active = *detail_io.active.borrow_and_update();
                 detail.active.send_replace(active);
                 if !active {
+                    pending_extrusion = None;
                     estimate_jobs.abort_all();
                     let generation = projection.state.generation;
                     let history_totals = projection.state.history_totals.clone();
@@ -1489,6 +1531,21 @@ async fn bridge(
                 if changed.is_err() { break }
                 let state = operation(&operations.state.borrow_and_update());
                 use crate::shared::control::{ControlError, ControlResult};
+                if let Some(waiting) = &mut pending_extrusion {
+                    match &state {
+                        model::OperationState::Accepted(model::PrinterActionKind::MachineControl) => waiting.accepted = true,
+                        model::OperationState::Rejected { action: model::PrinterActionKind::MachineControl, .. }
+                        | model::OperationState::Unknown(model::PrinterActionKind::MachineControl) => {
+                            let waiting = pending_extrusion.take().unwrap();
+                            let _ = waiting.command.reply.send(ControlResult::Unknown);
+                            operation_io.state.send_replace(model::OperationState::Idle);
+                            continue;
+                        }
+                        _ => {}
+                    }
+                    operation_io.state.send_replace(model::OperationState::Sending(model::PrinterActionKind::MachineControl));
+                    continue;
+                }
                 let result = match &state {
                     model::OperationState::Accepted(model::PrinterActionKind::MachineControl) => Some(ControlResult::Accepted),
                     model::OperationState::Rejected { action: model::PrinterActionKind::MachineControl, .. } => Some(ControlResult::Rejected(ControlError::PrinterRejected)),
@@ -1563,7 +1620,7 @@ async fn bridge(
             Some(command) = operation_io.machine_actions.recv() => {
                 use crate::shared::control::{ControlError, ControlResult};
                 if command.reply.is_closed() { continue; }
-                let busy = pending_control.is_some() || operations.state.borrow().is_pending() || operations.actions.capacity() != operations.actions.max_capacity();
+                let busy = pending_extrusion.is_some() || pending_control.is_some() || operations.state.borrow().is_pending() || operations.actions.capacity() != operations.actions.max_capacity();
                 let prepared = projection.prepare_control(&command, &context.telemetry.borrow(), busy);
                 match prepared {
                     Err(error) => { let _ = command.reply.send(ControlResult::Rejected(error)); }
@@ -1572,8 +1629,12 @@ async fn bridge(
                         match operations.actions.try_send(local::PrinterAction::MachineControl { control: Box::new(control) }) {
                         Ok(()) => {
                             operation_io.state.send_replace(model::OperationState::Sending(model::PrinterActionKind::MachineControl));
-                            pending_control = Some(command.reply);
-                            pending_refresh = refresh;
+                            if matches!(command.action, crate::shared::control::MachineAction::ExtrudeFilament { target_c: Some(_), .. }) {
+                                pending_extrusion = Some(crate::shared::control::ExtrusionWait::new(command, projection.state.generation, context.telemetry.borrow().job_generation, projection.observed_at.unwrap()));
+                            } else {
+                                pending_control = Some(command.reply);
+                                pending_refresh = refresh;
+                            }
                         }
                         Err(error) => {
                             let error = match error { mpsc::error::TrySendError::Full(_) => ControlError::Busy, mpsc::error::TrySendError::Closed(_) => ControlError::Disconnected };
@@ -1582,9 +1643,14 @@ async fn bridge(
                     }}
                 }
             }
+            _ = async {
+                if let Some(waiting) = &pending_extrusion {
+                    tokio::time::sleep_until(waiting.deadline().into()).await;
+                } else { std::future::pending::<()>().await; }
+            } => {}
             Some(action) = operation_io.actions.recv() => {
                 let kind = action.kind();
-                if pending_control.is_some()
+                if pending_extrusion.is_some() || pending_control.is_some()
                     || operations.state.borrow().is_pending()
                     || operations.actions.capacity() != operations.actions.max_capacity()
                 {
