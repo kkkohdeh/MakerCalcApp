@@ -299,9 +299,7 @@ pub(super) fn submit_label(editor: &Editor) -> String {
         Control::ZOffset => t!("printers.controls.z_offset_apply").into_owned(),
         Control::ClearPlate => t!("printers.controls.clear_plate").into_owned(),
         Control::AutoShutdown(_) | Control::Calibration(_) => editor.choice.label.clone(),
-        Control::Extrude(_) if editor.extrusion_limit.is_some() => {
-            t!("printers.controls.extrude_apply").into_owned()
-        }
+        Control::Extrude(_) => t!("printers.controls.extrude_apply").into_owned(),
         Control::Fan(_) if editor.fan_range.is_some() => {
             t!("printers.controls.fan_apply").into_owned()
         }

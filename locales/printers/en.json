@@ -677,7 +677,7 @@
       "fan_unreported": "No output reading. Enter %{min}–%{max}% of the configured maximum, using a whole number.",
       "fan_apply": "Apply fan power",
       "fan_switch": "Toggle fan",
-      "extrude": "Extrude / retract (mm)",
+      "extrude": "Extrude / retract",
       "extrude_range": "Positive moves extrude and negative moves retract. Enter a nonzero distance up to %{max} mm in either direction.",
       "extrude_limit_unknown": "Waiting for the active nozzle's extrusion limit.",
       "extrude_disabled": "The active nozzle's extrusion distance limit is 0 mm.",
@@ -822,6 +822,12 @@
         "udp_setup": "Could not configure UDP",
         "unreadable_or_too_large": "Unreadable response or exceeds 64 KiB"
       }
+    },
+    "extrusion": {
+      "direction": "Direction",
+      "extrude": "Extrude",
+      "retract": "Retract",
+      "distance": "Distance"
     }
   }
 }

@@ -677,7 +677,7 @@
       "fan_unreported": "Sin lectura de potencia. Ingresa un porcentaje entero del máximo configurado (%{min}–%{max}%).",
       "fan_apply": "Aplicar potencia",
       "fan_switch": "Cambiar estado del ventilador",
-      "extrude": "Extruir / retraer (mm)",
+      "extrude": "Extruir / retraer",
       "extrude_range": "Usa un valor positivo para extruir y uno negativo para retraer. Ingresa una distancia distinta de cero de hasta %{max} mm en cualquier dirección.",
       "extrude_limit_unknown": "Esperando el límite de extrusión de la boquilla activa.",
       "extrude_disabled": "El límite de extrusión de la boquilla activa es de 0 mm.",
@@ -822,6 +822,12 @@
         "udp_setup": "No se pudo preparar UDP",
         "unreadable_or_too_large": "Respuesta ilegible o mayor que 64 KiB"
       }
+    },
+    "extrusion": {
+      "direction": "Dirección",
+      "extrude": "Extruir",
+      "retract": "Retraer",
+      "distance": "Distancia"
     }
   }
 }

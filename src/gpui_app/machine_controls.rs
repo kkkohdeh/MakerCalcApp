@@ -24,6 +24,7 @@ use gpui_kit::{
 
 mod drying;
 mod editor_fields;
+mod extrusion;
 mod intent;
 mod motion;
 mod toolbar;
@@ -358,6 +359,7 @@ fn label(key: &str) -> String {
 #[derive(Default)]
 pub(super) struct MachineControls {
     drying: drying::State,
+    extrusion: extrusion::State,
     editor: Option<Editor>,
     rendered: bool,
     tasks: BTreeMap<LocalPrinterId, (u64, u64, Task<()>)>,
@@ -386,7 +388,6 @@ struct Editor {
     job: Option<MachineJobTarget>,
     z_range: Option<[f64; 2]>,
     shutdown_step: Option<u32>,
-    extrusion_limit: Option<f64>,
     fan_range: Option<[u8; 2]>,
     fan_scale: Option<f64>,
     focus: FocusHandle,
@@ -515,17 +516,10 @@ impl MakerCalcGpuiApp {
         } else {
             None
         };
-        let extrusion_limit = if let Control::Extrude(id) = choice.control {
-            let Some(limit) =
-                control_device(printer, id).and_then(|device| device.extrusion_limit_mm)
-            else {
-                return;
-            };
-            choice.value = Some(limit.min(10.).to_string());
-            Some(limit)
-        } else {
-            None
-        };
+        if let Control::Extrude(nozzle) = choice.control {
+            self.open_extrusion(id, nozzle, choice.label, window, cx);
+            return;
+        }
         let (fan_range, fan_scale) = if let Control::Fan(id) = choice.control {
             let Some(range @ [min, max]) = fan_range(printer, id) else {
                 return;
@@ -585,7 +579,6 @@ impl MakerCalcGpuiApp {
             value,
             job,
             z_range,
-            extrusion_limit,
             fan_range,
             fan_scale,
             shutdown_step: matches!(choice.control, Control::AutoShutdown(true))
@@ -625,7 +618,6 @@ impl MakerCalcGpuiApp {
                 && editor.z_range != z_offset_range(&printer.detail_state.machine)
             || editor.shutdown_step.is_some()
                 && editor.shutdown_step != printer.detail_state.machine.auto_shutdown_delay_step_s
-            || matches!(editor.choice.control, Control::Extrude(id) if editor.extrusion_limit != control_device(printer, id).and_then(|device| device.extrusion_limit_mm))
             || matches!(editor.choice.control, Control::Fan(id) if editor.fan_range != fan_range(printer, id)
                 || editor.fan_scale != control_device(printer, id).and_then(|device| device.output_at_full_control_pct))
             || editor.choice.control == Control::Name
@@ -715,6 +707,7 @@ impl MakerCalcGpuiApp {
             let result = receiver.await.unwrap_or(ControlResult::Unknown);
             let _ = app.update(cx, |app, cx| {
                 app.machine_controls.finish(id, session, epoch);
+                app.finish_extrusion(id, session, epoch, result, cx);
                 if !app.printers.get(&id).is_some_and(|p| {
                     p.session_generation == session && p.state.connection_epoch == epoch
                 }) {
@@ -754,6 +747,7 @@ impl MakerCalcGpuiApp {
     }
 
     pub(super) fn sync_machine_controls(&mut self) {
+        self.sync_extrusion();
         self.machine_controls.tasks.retain(|id, (s, e, _)| {
             self.printers
                 .get(id)
@@ -766,6 +760,9 @@ impl MakerCalcGpuiApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
+        if self.machine_controls.extrusion.is_visible() {
+            return self.render_extrusion(window, cx);
+        }
         if self.machine_controls.editor.is_none() && !self.machine_controls.rendered {
             return None;
         }
@@ -817,13 +814,6 @@ impl MakerCalcGpuiApp {
             }
             _ => None,
         };
-        let extrusion_hint = editor.extrusion_limit.map(|limit| {
-            t!(
-                "printers.controls.extrude_range",
-                max = localized_decimal(&limit.to_string())
-            )
-            .into_owned()
-        });
         let calibration_hint = match editor.choice.control {
             Control::Calibration(CalibrationKind::BedLeveling) => {
                 Some(t!("printers.controls.level_bed_confirm").into_owned())
@@ -867,18 +857,12 @@ impl MakerCalcGpuiApp {
                         input.id("machine-auto-shutdown-delay")
                     })
                     .when(printer_name, |input| input.id("machine-printer-name"))
-                    .when(editor.extrusion_limit.is_some(), |input| {
-                        input.id("machine-extrusion-length")
-                    })
                     .when(editor.fan_range.is_some(), |input| {
                         input.id("machine-fan-power")
                     })
                     .aria_label(if auto_shutdown {
                         t!("printers.controls.auto_shutdown_seconds").into_owned()
-                    } else if printer_name
-                        || editor.extrusion_limit.is_some()
-                        || editor.fan_range.is_some()
-                    {
+                    } else if printer_name || editor.fan_range.is_some() {
                         editor.choice.label.clone()
                     } else {
                         t!("printers.controls.value").into_owned()
@@ -922,7 +906,6 @@ impl MakerCalcGpuiApp {
                                     z_range
                                         .or(shutdown_hint)
                                         .or(calibration_hint)
-                                        .or(extrusion_hint)
                                         .or(fan_hint)
                                         .unwrap_or_else(|| {
                                             if clear_plate {
