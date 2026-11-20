@@ -827,7 +827,13 @@
       "direction": "Direction",
       "extrude": "Extrude",
       "retract": "Retract",
-      "distance": "Distance"
+      "distance": "Distance",
+      "speed": "Speed",
+      "temperature": "Temperature",
+      "temperature_range": "%{min}–%{max} °C. Waits for the nozzle before moving.",
+      "distance_range": "Maximum %{max} mm per move.",
+      "speed_range": "%{min}–%{max} mm/s of filament.",
+      "waiting": "Waiting for the printer. Cancel stops waiting; the heater remains on."
     }
   }
 }

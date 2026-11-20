@@ -827,7 +827,13 @@
       "direction": "Dirección",
       "extrude": "Extruir",
       "retract": "Retraer",
-      "distance": "Distancia"
+      "distance": "Distancia",
+      "speed": "Velocidad",
+      "temperature": "Temperatura",
+      "temperature_range": "%{min}–%{max} °C. Espera a la boquilla antes de mover.",
+      "distance_range": "Máximo %{max} mm por movimiento.",
+      "speed_range": "%{min}–%{max} mm/s de filamento.",
+      "waiting": "Esperando a la impresora. Cancelar descarta la espera; el calentador sigue encendido."
     }
   }
 }

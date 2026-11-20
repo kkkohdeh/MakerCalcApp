@@ -318,7 +318,7 @@ fn availability(
                 .idle_setting_availability(printer.state.telemetry.print_state)?;
         }
         if device.extrusion_limit_mm.is_none_or(|limit| limit <= 0.)
-            || device.can_extrude != Some(true)
+            || (device.can_extrude != Some(true) && device.extrusion_temperature_range_c.is_none())
         {
             return Err(ControlError::InvalidState);
         }
