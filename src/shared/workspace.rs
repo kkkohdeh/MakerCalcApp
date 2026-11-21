@@ -545,6 +545,19 @@ pub(crate) enum PrinterAction {
     },
 }
 impl PrinterAction {
+    pub(crate) fn is_stop(&self) -> bool {
+        matches!(
+            self,
+            Self::PausePrint(_)
+                | Self::CancelPrint(_)
+                | Self::SetTemperatureTarget { target_c: 0, .. }
+        )
+    }
+
+    pub(crate) fn is_remote_stop(&self) -> bool {
+        matches!(self, Self::Remote { action, .. } if action.is_stop())
+    }
+
     pub(crate) fn into_permitted(
         self,
         state: &crate::state::PrinterState,
@@ -650,7 +663,11 @@ impl OperationHandle {
         if !self.state.borrow().allows_actions() {
             return Err(ControlError::Unsupported);
         }
-        if self.state.borrow().is_pending() || self.actions.capacity() < self.actions.max_capacity()
+        let priority = remote.is_some() && action.is_stop();
+        if !priority
+            && (self.state.borrow().is_pending()
+                || self.actions.capacity() < self.actions.max_capacity()
+                || self.machine_actions.capacity() < self.machine_actions.max_capacity())
         {
             return Err(ControlError::Busy);
         }
@@ -679,7 +696,7 @@ pub(crate) struct OperationIo {
 pub(crate) fn make_operation_channels() -> (OperationHandle, OperationIo) {
     let (actions, action_io) = mpsc::channel(4);
     let (state_io, state) = watch::channel(OperationState::Idle);
-    let (machine_actions, machine_io) = mpsc::channel(1);
+    let (machine_actions, machine_io) = mpsc::channel(2);
     (
         OperationHandle {
             actions,

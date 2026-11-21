@@ -267,6 +267,7 @@ struct DetailSession {
 
 struct PendingControl {
     request: PendingControlRequest,
+    ticket: Option<u64>,
     kind: local::PrinterActionKind,
     deadline: tokio::time::Instant,
     state: watch::Sender<OperationState>,
@@ -333,7 +334,7 @@ impl DetailSession {
         if let Some(control) = self.pending_control.take() {
             control
                 .state
-                .send_replace(OperationState::Unknown(control.kind));
+                .send_replace(OperationState::Unknown(control.kind).for_ticket(control.ticket));
         }
     }
 
@@ -481,7 +482,14 @@ pub(crate) async fn run_driver(
             return;
         }
         generation = generation.saturating_add(1);
-        if !matches!(&*operation_io.state.borrow(), OperationState::Unknown(_)) {
+        if !matches!(
+            &*operation_io.state.borrow(),
+            OperationState::Unknown(_)
+                | OperationState::MachineResult {
+                    result: crate::shared::control::ControlResult::Unknown,
+                    ..
+                }
+        ) {
             let _ = operation_io.state.send_replace(OperationState::Idle);
         }
         // Commands queued for a previous connection are not safe to replay.
@@ -865,7 +873,7 @@ async fn event_loop(
                 let Some(request) = request else { return Ok(()); };
                 handle_detail_request(socket, next_id, parser, state, sender, detail, detail_io, shutdown, api_key, file_reader, operation_io, request).await?;
             },
-            action = operation_io.actions.recv(), if detail.pending_control.is_none() => {
+            action = operation_io.actions.recv() => {
                 let Some(action) = action else { return Ok(()); };
                 send_printer_action(socket, next_id, state, detail, file_reader, operation_io, action).await?;
             },
@@ -1129,6 +1137,7 @@ async fn send_printer_action(
     operation_io: &OperationIo,
     action: PrinterAction,
 ) -> Result<(), MoonrakerError> {
+    let priority = action.is_remote_stop();
     let (action, remote) = match action {
         PrinterAction::Remote { action, permit } => {
             let physical = match *action {
@@ -1148,18 +1157,27 @@ async fn send_printer_action(
         action => (action, false),
     };
     let kind = action.kind();
-    if operation_io.state.borrow().is_pending() {
-        let _ = operation_io.state.send_replace(OperationState::Rejected {
-            action: kind,
-            message: "Ya hay una operación de impresora en curso".to_owned(),
-        });
+    let ticket = action.ticket();
+    if !priority && (detail.pending_control.is_some() || operation_io.state.borrow().is_pending()) {
+        if ticket.is_some() {
+            operation_io.state.send_replace(
+                OperationState::Rejected {
+                    action: kind,
+                    message: crate::i18n::t!("printers.actions.busy_control").into_owned(),
+                }
+                .for_ticket(ticket),
+            );
+        }
         return Ok(());
     }
     if let Err(message) = action_allowed(&action, state) {
-        let _ = operation_io.state.send_replace(OperationState::Rejected {
-            action: kind,
-            message,
-        });
+        let _ = operation_io.state.send_replace(
+            OperationState::Rejected {
+                action: kind,
+                message,
+            }
+            .for_ticket(ticket),
+        );
         return Ok(());
     }
     if let PrinterAction::UploadGcode {
@@ -1179,10 +1197,13 @@ async fn send_printer_action(
     let mut request = match request {
         Ok(request) => request,
         Err(error) => {
-            let _ = operation_io.state.send_replace(OperationState::Rejected {
-                action: kind,
-                message: error.to_string(),
-            });
+            let _ = operation_io.state.send_replace(
+                OperationState::Rejected {
+                    action: kind,
+                    message: error.to_string(),
+                }
+                .for_ticket(ticket),
+            );
             return Ok(());
         }
     };
@@ -1194,17 +1215,21 @@ async fn send_printer_action(
         }
         _ => PendingControlRequest::Sent(*next_id),
     };
+    if priority {
+        detail.pending_control = None;
+    }
     operation_io
         .state
         .send_replace(OperationState::Sending(kind));
     if let Err(error) = send_value(socket, &request).await {
         operation_io
             .state
-            .send_replace(OperationState::Unknown(kind));
+            .send_replace(OperationState::Unknown(kind).for_ticket(ticket));
         return Err(error);
     }
     detail.pending_control = Some(PendingControl {
         request: pending,
+        ticket,
         kind,
         deadline,
         state: operation_io.state.clone(),
@@ -1232,17 +1257,20 @@ async fn send_checked_queue_removal(
     let request = match runtime_control_request(*next_id, &action, detail, state) {
         Ok(request) => request,
         Err(error) => {
-            pending.state.send_replace(OperationState::Rejected {
-                action: pending.kind,
-                message: error.to_string(),
-            });
+            pending.state.send_replace(
+                OperationState::Rejected {
+                    action: pending.kind,
+                    message: error.to_string(),
+                }
+                .for_ticket(pending.ticket),
+            );
             return Ok(());
         }
     };
     if let Err(error) = send_value(socket, &request).await {
         pending
             .state
-            .send_replace(OperationState::Unknown(pending.kind));
+            .send_replace(OperationState::Unknown(pending.kind).for_ticket(pending.ticket));
         return Err(error);
     }
     pending.request = PendingControlRequest::Sent(*next_id);
@@ -1873,7 +1901,7 @@ async fn wait_for_detail_reply(
             () = std::future::ready(()), if detail.pending_control.as_ref().is_some_and(PendingControl::queue_checked) => {
                 send_checked_queue_removal(socket, next_id, state, detail).await?;
             },
-            action = operation_io.actions.recv(), if detail.pending_control.is_none() => {
+            action = operation_io.actions.recv() => {
                 let Some(action) = action else { return Err(MoonrakerError::Cancelled); };
                 send_printer_action(socket, next_id, state, detail, file_reader, operation_io, action).await?;
             },
@@ -2117,7 +2145,9 @@ fn apply_notification(
         } else {
             OperationState::Unknown(kind)
         };
-        control.state.send_replace(result);
+        control
+            .state
+            .send_replace(result.for_ticket(control.ticket));
         return Ok(SessionSignal::Continue);
     }
     let Some(method) = value.get("method").and_then(Value::as_str) else {

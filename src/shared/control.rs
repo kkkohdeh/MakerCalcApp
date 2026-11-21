@@ -475,6 +475,15 @@ impl RemoteSession {
 }
 
 impl MachineAction {
+    pub(crate) fn is_stop(&self) -> bool {
+        matches!(
+            self,
+            Self::CancelFilamentOperation { .. }
+                | Self::StopDrying { .. }
+                | Self::SetPrintQueuePaused { paused: true }
+        )
+    }
+
     pub(crate) fn is_physical(&self) -> bool {
         matches!(
             self,

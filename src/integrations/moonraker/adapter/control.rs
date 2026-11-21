@@ -190,6 +190,7 @@ pub(super) fn extrusion_temperature_range(
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct PreparedControl {
+    pub(in crate::integrations::moonraker) ticket: Option<u64>,
     action: A,
     target: Option<Resource>,
     generation: u64,
@@ -205,6 +206,10 @@ pub(crate) struct PreparedControl {
 impl PreparedControl {
     pub(in crate::integrations::moonraker) fn is_remote(&self) -> bool {
         self.remote.is_some()
+    }
+
+    pub(in crate::integrations::moonraker) fn is_remote_stop(&self) -> bool {
+        self.is_remote() && self.action.is_stop()
     }
 
     pub(in crate::integrations::moonraker) fn needs_queue_check(&self) -> bool {
@@ -331,6 +336,7 @@ impl Projection {
             return Err(E::StaleResource);
         }
         let prepared = PreparedControl {
+            ticket: None,
             action: command.action.clone(),
             target,
             generation: self.state.generation,

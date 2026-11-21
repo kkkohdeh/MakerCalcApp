@@ -309,7 +309,7 @@ pub(super) async fn run_session(
     let mut summary = SummarySubscriptions::default();
     summary.update(&registry.borrow());
     let remote_session = std::sync::Arc::new(());
-    let mut remote_replies = std::collections::BTreeMap::new();
+    let mut remote_replies = Vec::new();
     sync_registry_with_thumbnails(planner, registry, Instant::now(), Some(&thumbnails));
     let mut ticks = interval(Duration::from_secs(1));
     let mut history_ticks = interval(HISTORY_POLL_INTERVAL);
@@ -558,10 +558,11 @@ pub(super) async fn run_session(
     }
 }
 
-type RemoteReplies = std::collections::BTreeMap<
+type RemoteReplies = Vec<(
     crate::state::LocalPrinterId,
+    bool,
     tokio::sync::oneshot::Receiver<crate::shared::control::ControlResult>,
->;
+)>;
 
 fn dispatch_machine_command(
     registry: &CloudRegistry,
@@ -570,7 +571,7 @@ fn dispatch_machine_command(
     session: &std::sync::Arc<()>,
     replies: &mut RemoteReplies,
 ) {
-    replies.retain(|_, reply| {
+    replies.retain_mut(|(_, _, reply)| {
         matches!(
             reply.try_recv(),
             Err(tokio::sync::oneshot::error::TryRecvError::Empty)
@@ -584,9 +585,6 @@ fn dispatch_machine_command(
     else {
         return;
     };
-    if replies.len() >= 32 || replies.contains_key(&printer.id) {
-        return;
-    }
     let state = printer.receiver.borrow();
     if state.connection != LanConnection::Connected
         || !state.telemetry_ready
@@ -601,12 +599,22 @@ fn dispatch_machine_command(
     let Some(action) = command.resolve(&detail, &state) else {
         return;
     };
+    let priority = action.is_stop();
+    if replies
+        .iter()
+        .filter(|(_, stop, _)| *stop == priority)
+        .count()
+        >= 32
+        || (!priority && replies.iter().any(|(id, _, _)| *id == printer.id))
+    {
+        return;
+    }
     let permit = crate::shared::control::RemoteSession(std::sync::Arc::downgrade(session));
     if let Ok(reply) = printer
         .operation
         .remote_machine_action(&state, action, permit)
     {
-        replies.insert(printer.id, reply);
+        replies.push((printer.id, priority, reply));
     }
 }
 
@@ -664,9 +672,9 @@ pub(super) fn dispatch_command(
     if state.connection != LanConnection::Connected
         || !state.telemetry_ready
         || !state.controls.remote
-        || printer.operation.state.borrow().is_pending()
-        // A queued local/remote action also counts as busy, before the driver publishes Sending.
-        || printer.operation.actions.capacity() < printer.operation.actions.max_capacity()
+        || state
+            .last_valid_at
+            .is_none_or(|at| at.elapsed() > Duration::from_secs(15))
     {
         return;
     }
@@ -723,11 +731,19 @@ pub(super) fn dispatch_command(
     };
     // Best effort, at most once: never wait, retry, or replay after reconnecting.
     let permit = crate::shared::control::RemoteSession(std::sync::Arc::downgrade(session));
-    if permit.permits_printer(&action, &state) {
-        let _ = printer.operation.actions.try_send(PrinterAction::Remote {
-            action: Box::new(action),
-            permit,
-        });
+    let action = PrinterAction::Remote {
+        action: Box::new(action),
+        permit,
+    };
+    if !action.is_remote_stop()
+        && (printer.operation.state.borrow().is_pending()
+            || printer.operation.actions.capacity() < printer.operation.actions.max_capacity())
+    {
+        return;
+    }
+    if matches!(&action, PrinterAction::Remote { action, permit } if permit.permits_printer(action, &state))
+    {
+        let _ = printer.operation.actions.try_send(action);
     }
 }
 

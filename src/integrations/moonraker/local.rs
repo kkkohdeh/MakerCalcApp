@@ -67,6 +67,26 @@ pub(crate) enum PrinterAction {
 }
 
 impl PrinterAction {
+    pub(super) fn ticket(&self) -> Option<u64> {
+        match self {
+            Self::MachineControl { control } => control.ticket,
+            _ => None,
+        }
+    }
+
+    pub(super) fn is_remote_stop(&self) -> bool {
+        match self {
+            Self::Remote { action, .. } => matches!(
+                **action,
+                Self::PausePrint(_)
+                    | Self::CancelPrint(_)
+                    | Self::SetTemperatureTarget { target_c: 0, .. }
+            ),
+            Self::MachineControl { control } => control.is_remote_stop(),
+            _ => false,
+        }
+    }
+
     pub(crate) fn kind(&self) -> PrinterActionKind {
         match self {
             Self::Remote { action, .. } => action.kind(),
@@ -92,9 +112,25 @@ pub(crate) enum OperationState {
         message: String,
     },
     Unknown(PrinterActionKind),
+    MachineResult {
+        ticket: u64,
+        result: crate::shared::control::ControlResult,
+    },
 }
 
 impl OperationState {
+    pub(super) fn for_ticket(self, ticket: Option<u64>) -> Self {
+        use crate::shared::control::{ControlError, ControlResult};
+        let Some(ticket) = ticket else { return self };
+        let result = match self {
+            Self::Accepted(_) => ControlResult::Accepted,
+            Self::Rejected { .. } => ControlResult::Rejected(ControlError::PrinterRejected),
+            Self::Unknown(_) => ControlResult::Unknown,
+            _ => return self,
+        };
+        Self::MachineResult { ticket, result }
+    }
+
     pub(crate) fn is_pending(&self) -> bool {
         matches!(self, Self::Sending(_))
     }
