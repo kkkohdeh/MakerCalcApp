@@ -267,7 +267,7 @@ struct DetailSession {
 
 struct PendingControl {
     request: PendingControlRequest,
-    ticket: Option<u64>,
+    reply: Option<tokio::sync::oneshot::Sender<crate::shared::control::ControlResult>>,
     kind: local::PrinterActionKind,
     deadline: tokio::time::Instant,
     state: watch::Sender<OperationState>,
@@ -280,6 +280,10 @@ enum PendingControlRequest {
 }
 
 impl PendingControl {
+    fn finish(self, result: OperationState) {
+        finish_operation(&self.state, self.reply, result);
+    }
+
     fn awaits(&self, id: u64) -> bool {
         matches!(self.request, PendingControlRequest::Sent(expected) | PendingControlRequest::CheckingQueue(expected, _) if expected == id)
     }
@@ -332,9 +336,8 @@ impl DetailSession {
     }
     fn mark_control_unknown(&mut self) {
         if let Some(control) = self.pending_control.take() {
-            control
-                .state
-                .send_replace(OperationState::Unknown(control.kind).for_ticket(control.ticket));
+            let kind = control.kind;
+            control.finish(OperationState::Unknown(kind));
         }
     }
 
@@ -482,24 +485,22 @@ pub(crate) async fn run_driver(
             return;
         }
         generation = generation.saturating_add(1);
-        if !matches!(
-            &*operation_io.state.borrow(),
-            OperationState::Unknown(_)
-                | OperationState::MachineResult {
-                    result: crate::shared::control::ControlResult::Unknown,
-                    ..
-                }
-        ) {
+        if !matches!(&*operation_io.state.borrow(), OperationState::Unknown(_)) {
             let _ = operation_io.state.send_replace(OperationState::Idle);
         }
         // Commands queued for a previous connection are not safe to replay.
         if generation > 1 {
             while let Ok(action) = operation_io.actions.try_recv() {
-                operation_io.state.send_replace(OperationState::Rejected {
-                    action: action.kind(),
-                    message: "La sesión cambió antes de enviar la acción. Confírmala de nuevo."
-                        .to_owned(),
-                });
+                let kind = action.kind();
+                finish_operation(
+                    &operation_io.state,
+                    machine_reply(action),
+                    OperationState::Rejected {
+                        action: kind,
+                        message: "La sesión cambió antes de enviar la acción. Confírmala de nuevo."
+                            .to_owned(),
+                    },
+                );
             }
         }
         let _ = detail_io
@@ -1157,26 +1158,27 @@ async fn send_printer_action(
         action => (action, false),
     };
     let kind = action.kind();
-    let ticket = action.ticket();
     if !priority && (detail.pending_control.is_some() || operation_io.state.borrow().is_pending()) {
-        if ticket.is_some() {
-            operation_io.state.send_replace(
+        if let Some(reply) = machine_reply(action) {
+            finish_operation(
+                &operation_io.state,
+                Some(reply),
                 OperationState::Rejected {
                     action: kind,
                     message: crate::i18n::t!("printers.actions.busy_control").into_owned(),
-                }
-                .for_ticket(ticket),
+                },
             );
         }
         return Ok(());
     }
     if let Err(message) = action_allowed(&action, state) {
-        let _ = operation_io.state.send_replace(
+        finish_operation(
+            &operation_io.state,
+            machine_reply(action),
             OperationState::Rejected {
                 action: kind,
                 message,
-            }
-            .for_ticket(ticket),
+            },
         );
         return Ok(());
     }
@@ -1197,45 +1199,78 @@ async fn send_printer_action(
     let mut request = match request {
         Ok(request) => request,
         Err(error) => {
-            let _ = operation_io.state.send_replace(
+            finish_operation(
+                &operation_io.state,
+                machine_reply(action),
                 OperationState::Rejected {
                     action: kind,
                     message: error.to_string(),
-                }
-                .for_ticket(ticket),
+                },
             );
             return Ok(());
         }
     };
     let deadline = tokio::time::Instant::now() + action_response_timeout(&action);
-    let pending = match action {
-        PrinterAction::MachineControl { control } if control.needs_queue_check() => {
+    let (pending, reply) = match action {
+        PrinterAction::MachineControl { control, reply } if control.needs_queue_check() => {
             request = json!({"jsonrpc":"2.0", "method":"server.job_queue.status", "id":*next_id});
-            PendingControlRequest::CheckingQueue(*next_id, control)
+            (
+                PendingControlRequest::CheckingQueue(*next_id, control),
+                Some(reply),
+            )
         }
-        _ => PendingControlRequest::Sent(*next_id),
+        action => (PendingControlRequest::Sent(*next_id), machine_reply(action)),
     };
     if priority {
-        detail.pending_control = None;
+        detail.mark_control_unknown();
     }
-    operation_io
-        .state
-        .send_replace(OperationState::Sending(kind));
-    if let Err(error) = send_value(socket, &request).await {
+    if reply.is_none() {
         operation_io
             .state
-            .send_replace(OperationState::Unknown(kind).for_ticket(ticket));
-        return Err(error);
+            .send_replace(OperationState::Sending(kind));
     }
     detail.pending_control = Some(PendingControl {
         request: pending,
-        ticket,
+        reply,
         kind,
         deadline,
         state: operation_io.state.clone(),
     });
+    if let Err(error) = send_value(socket, &request).await {
+        detail.mark_control_unknown();
+        return Err(error);
+    }
     *next_id += 1;
     Ok(())
+}
+
+fn machine_reply(
+    action: PrinterAction,
+) -> Option<tokio::sync::oneshot::Sender<crate::shared::control::ControlResult>> {
+    match action {
+        PrinterAction::MachineControl { reply, .. } => Some(reply),
+        _ => None,
+    }
+}
+
+fn finish_operation(
+    state: &watch::Sender<OperationState>,
+    reply: Option<tokio::sync::oneshot::Sender<crate::shared::control::ControlResult>>,
+    result: OperationState,
+) {
+    use crate::shared::control::{ControlError, ControlResult};
+    if let Some(reply) = reply {
+        let result = match result {
+            OperationState::Accepted(_) => ControlResult::Accepted,
+            OperationState::Rejected { .. } => {
+                ControlResult::Rejected(ControlError::PrinterRejected)
+            }
+            _ => ControlResult::Unknown,
+        };
+        let _ = reply.send(result);
+    } else {
+        state.send_replace(result);
+    }
 }
 
 async fn send_checked_queue_removal(
@@ -1250,30 +1285,27 @@ async fn send_checked_queue_removal(
     else {
         return Ok(());
     };
-    let PendingControlRequest::QueueChecked(control) = pending.request else {
+    let PendingControlRequest::QueueChecked(control) =
+        std::mem::replace(&mut pending.request, PendingControlRequest::Sent(*next_id))
+    else {
         unreachable!();
     };
-    let action = PrinterAction::MachineControl { control };
-    let request = match runtime_control_request(*next_id, &action, detail, state) {
+    let request = match runtime_machine_request(*next_id, &control, detail, state) {
         Ok(request) => request,
         Err(error) => {
-            pending.state.send_replace(
-                OperationState::Rejected {
-                    action: pending.kind,
-                    message: error.to_string(),
-                }
-                .for_ticket(pending.ticket),
-            );
+            let kind = pending.kind;
+            pending.finish(OperationState::Rejected {
+                action: kind,
+                message: error.to_string(),
+            });
             return Ok(());
         }
     };
     if let Err(error) = send_value(socket, &request).await {
-        pending
-            .state
-            .send_replace(OperationState::Unknown(pending.kind).for_ticket(pending.ticket));
+        let kind = pending.kind;
+        pending.finish(OperationState::Unknown(kind));
         return Err(error);
     }
-    pending.request = PendingControlRequest::Sent(*next_id);
     detail.pending_control = Some(pending);
     *next_id += 1;
     Ok(())
@@ -1370,23 +1402,33 @@ fn runtime_control_request(
     state: &PrinterState,
 ) -> Result<Value, local::ControlError> {
     match action {
-        PrinterAction::MachineControl { control }
-            if detail.active
-                && control.permits(
-                    state,
-                    detail.local_view.as_ref().is_none_or(|view| *view.borrow()),
-                ) =>
-        {
-            let request = adapter::control::build_request(id, control, &detail.state, state)
-                .map_err(|_| local::ControlError::Machine)?;
-            if control.is_remote() {
-                validate_remote_script(&request, detail)?;
-            }
-            Ok(request)
+        PrinterAction::MachineControl { control, .. } => {
+            runtime_machine_request(id, control, detail, state)
         }
-        PrinterAction::MachineControl { .. } => Err(local::ControlError::Machine),
         _ => build_control_request(id, action),
     }
+}
+
+fn runtime_machine_request(
+    id: u64,
+    control: &adapter::control::PreparedControl,
+    detail: &DetailSession,
+    state: &PrinterState,
+) -> Result<Value, local::ControlError> {
+    if !detail.active
+        || !control.permits(
+            state,
+            detail.local_view.as_ref().is_none_or(|view| *view.borrow()),
+        )
+    {
+        return Err(local::ControlError::Machine);
+    }
+    let request = adapter::control::build_request(id, control, &detail.state, state)
+        .map_err(|_| local::ControlError::Machine)?;
+    if control.is_remote() {
+        validate_remote_script(&request, detail)?;
+    }
+    Ok(request)
 }
 
 fn validate_remote_script(
@@ -1413,7 +1455,7 @@ fn validate_remote_script(
 
 fn action_response_timeout(action: &PrinterAction) -> Duration {
     match action {
-        PrinterAction::MachineControl { control } => control.response_timeout(),
+        PrinterAction::MachineControl { control, .. } => control.response_timeout(),
         _ => REQUEST_TIMEOUT,
     }
 }
@@ -2145,9 +2187,7 @@ fn apply_notification(
         } else {
             OperationState::Unknown(kind)
         };
-        control
-            .state
-            .send_replace(result.for_ticket(control.ticket));
+        control.finish(result);
         return Ok(SessionSignal::Continue);
     }
     let Some(method) = value.get("method").and_then(Value::as_str) else {

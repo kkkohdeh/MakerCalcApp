@@ -1046,25 +1046,12 @@ fn action_kind(kind: local::PrinterActionKind) -> model::PrinterActionKind {
     }
 }
 fn operation(source: &local::OperationState) -> model::OperationState {
-    use crate::shared::control::ControlResult;
     use local::OperationState as S;
     match source {
         S::Idle => model::OperationState::Idle,
         S::Sending(k) => model::OperationState::Sending(action_kind(*k)),
         S::Accepted(k) => model::OperationState::Accepted(action_kind(*k)),
         S::Unknown(k) => model::OperationState::Unknown(action_kind(*k)),
-        S::MachineResult { result, .. } => match result {
-            ControlResult::Accepted => {
-                model::OperationState::Accepted(model::PrinterActionKind::MachineControl)
-            }
-            ControlResult::Unknown => {
-                model::OperationState::Unknown(model::PrinterActionKind::MachineControl)
-            }
-            ControlResult::Rejected(_) => model::OperationState::Rejected {
-                action: model::PrinterActionKind::MachineControl,
-                message: crate::i18n::t!("printers.actions.machine_control_rejected").into_owned(),
-            },
-        },
         S::Rejected { action, message } => model::OperationState::Rejected {
             action: action_kind(*action),
             message: if *action == local::PrinterActionKind::MachineControl {
@@ -1445,8 +1432,7 @@ async fn bridge(
         tokio::sync::oneshot::Sender<crate::shared::control::ControlResult>,
     > = None;
     let mut pending_refresh = None;
-    let mut next_ticket = 0_u64;
-    let mut pending_ticket = None;
+    let mut pending_result = None;
     let mut pending_extrusion: Option<crate::shared::control::ExtrusionWait> = None;
     let mut job_generation = context.telemetry.borrow().job_generation;
     detail
@@ -1472,28 +1458,16 @@ async fn bridge(
                 }
                 Ok(true) => {
                     let command = waiting.into_move();
-                    let Some(ticket) = next_ticket.checked_add(1) else {
-                        break;
-                    };
-                    next_ticket = ticket;
                     let result = projection
                         .prepare_control(
                             &command,
                             &context.telemetry.borrow(),
                             operations.state.borrow().is_pending(),
                         )
-                        .and_then(|mut control| {
-                            control.ticket = Some(ticket);
-                            operations
-                                .actions
-                                .try_send(local::PrinterAction::MachineControl {
-                                    control: Box::new(control),
-                                })
-                                .map_err(|_| ControlError::Busy)
-                        });
+                        .and_then(|control| operations.try_machine_action(control));
                     match result {
-                        Ok(()) => {
-                            pending_ticket = Some(ticket);
+                        Ok(result) => {
+                            pending_result = Some(result);
                             pending_control = Some(command.reply);
                         }
                         Err(error) => {
@@ -1526,7 +1500,7 @@ async fn bridge(
                     projection.state.print_objects = model::ReadResult::default();
                     projection.object_job = None;
                 }
-                if !connected { estimate_jobs.abort_all(); pending_extrusion = None; }
+                if !connected { estimate_jobs.abort_all(); pending_extrusion = None; pending_result = None; }
                 if !connected && let Some(reply) = pending_control.take() {
                     pending_refresh = None;
                     let _ = reply.send(crate::shared::control::ControlResult::Unknown);
@@ -1626,53 +1600,60 @@ async fn bridge(
             }
             changed = operations.state.changed() => {
                 if changed.is_err() { break }
-                let state = {
-                    let raw = operations.state.borrow_and_update();
-                    if matches!(*raw, local::OperationState::MachineResult { ticket, .. } if pending_ticket != Some(ticket)) {
-                        continue;
-                    }
-                    operation(&raw)
-                };
-                use crate::shared::control::{ControlError, ControlResult};
-                if let Some(waiting) = &mut pending_extrusion {
-                    match &state {
-                        model::OperationState::Accepted(model::PrinterActionKind::MachineControl) => waiting.accepted = true,
-                        model::OperationState::Rejected { action: model::PrinterActionKind::MachineControl, .. }
-                        | model::OperationState::Unknown(model::PrinterActionKind::MachineControl) => {
-                            let waiting = pending_extrusion.take().unwrap();
-                            let _ = waiting.command.reply.send(ControlResult::Unknown);
-                            operation_io.state.send_replace(model::OperationState::Idle);
-                            continue;
-                        }
-                        _ => {}
-                    }
-                    operation_io.state.send_replace(model::OperationState::Sending(model::PrinterActionKind::MachineControl));
-                    continue;
+                let state = operation(&operations.state.borrow_and_update());
+                let uploaded = matches!(state, model::OperationState::Accepted(model::PrinterActionKind::UploadGcode));
+                if pending_control.is_none() && pending_extrusion.is_none() {
+                    operation_io.state.send_replace(state);
                 }
-                let result = match &state {
-                    model::OperationState::Accepted(model::PrinterActionKind::MachineControl) => Some(ControlResult::Accepted),
-                    model::OperationState::Rejected { action: model::PrinterActionKind::MachineControl, .. } => Some(ControlResult::Rejected(ControlError::PrinterRejected)),
-                    model::OperationState::Unknown(model::PrinterActionKind::MachineControl) => Some(ControlResult::Unknown),
-                    _ => None,
-                };
-                let mut refresh = None;
-                if let Some(result) = result && let Some(reply) = pending_control.take() {
-                    let request = pending_refresh.take();
-                    if result == ControlResult::Accepted { refresh = request; }
-                    let _ = reply.send(result);
-                }
-                if matches!(state, model::OperationState::Accepted(model::PrinterActionKind::UploadGcode)) {
-                    refresh = Some(model::DetailRequest::ListFiles);
-                }
-                let machine_control = matches!(state, model::OperationState::Accepted(model::PrinterActionKind::MachineControl));
-                operation_io.state.send_replace(state);
-                // Read back only the affected area; never replay a physical action.
-                if let Some(request) = refresh
-                    && (*detail_io.active.borrow() || (machine_control && *detail_io.cloud_summary.borrow()))
-                    && context.telemetry.borrow().connection == crate::state::LanConnection::Connected {
+                if uploaded && *detail_io.active.borrow()
+                    && context.telemetry.borrow().connection == crate::state::LanConnection::Connected
+                {
+                    let request = model::DetailRequest::ListFiles;
                     if let Err(message) = projection.enqueue_read(&request, &detail.requests) {
                         projection.request_error(&request, message);
-                    } else if machine_control {
+                        projection.state.revision = projection.state.revision.saturating_add(1);
+                        detail_io.state.send_replace(Arc::new(projection.state.clone()));
+                    }
+                }
+            }
+            result = async {
+                match pending_result.as_mut() {
+                    Some(result) => result.await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                use crate::shared::control::ControlResult;
+                use model::{OperationState as State, PrinterActionKind::MachineControl};
+                pending_result = None;
+                let result = result.unwrap_or(ControlResult::Unknown);
+                if let Some(mut waiting) = pending_extrusion.take() {
+                    if result == ControlResult::Accepted {
+                        waiting.accepted = true;
+                        pending_extrusion = Some(waiting);
+                    } else {
+                        let _ = waiting.command.reply.send(ControlResult::Unknown);
+                        operation_io.state.send_replace(State::Idle);
+                    }
+                    continue;
+                }
+                if let Some(reply) = pending_control.take() { let _ = reply.send(result); }
+                let refresh = pending_refresh.take();
+                operation_io.state.send_replace(match result {
+                    ControlResult::Accepted => State::Accepted(MachineControl),
+                    ControlResult::Unknown => State::Unknown(MachineControl),
+                    ControlResult::Rejected(_) => State::Rejected {
+                        action: MachineControl,
+                        message: crate::i18n::t!("printers.actions.machine_control_rejected").into_owned(),
+                    },
+                });
+                if result == ControlResult::Accepted
+                    && let Some(request) = refresh
+                    && (*detail_io.active.borrow() || *detail_io.cloud_summary.borrow())
+                    && context.telemetry.borrow().connection == crate::state::LanConnection::Connected
+                {
+                    if let Err(message) = projection.enqueue_read(&request, &detail.requests) {
+                        projection.request_error(&request, message);
+                    } else {
                         match request {
                             model::DetailRequest::ListFiles => projection.state.files.status = model::ReadStatus::Loading,
                             model::DetailRequest::Queue => projection.state.queue.status = model::ReadStatus::Loading,
@@ -1683,8 +1664,6 @@ async fn bridge(
                             }
                             _ => {}
                         }
-                    } else {
-                        continue;
                     }
                     projection.state.revision = projection.state.revision.saturating_add(1);
                     detail_io.state.send_replace(Arc::new(projection.state.clone()));
@@ -1733,18 +1712,15 @@ async fn bridge(
                 let prepared = projection.prepare_control(&command, &context.telemetry.borrow(), busy);
                 match prepared {
                     Err(error) => { let _ = command.reply.send(ControlResult::Rejected(error)); }
-                    Ok(mut control) => {
-                        let Some(ticket) = next_ticket.checked_add(1) else { break };
-                        next_ticket = ticket;
-                        control.ticket = Some(ticket);
+                    Ok(control) => {
                         let refresh = control.refresh_request();
-                        match operations.actions.try_send(local::PrinterAction::MachineControl { control: Box::new(control) }) {
-                        Ok(()) => {
-                            pending_ticket = Some(ticket);
+                        match operations.try_machine_action(control) {
+                        Ok(result) => {
                             if priority {
                                 if let Some(reply) = pending_control.take() { let _ = reply.send(ControlResult::Unknown); }
                                 pending_extrusion = None;
                             }
+                            pending_result = Some(result);
                             operation_io.state.send_replace(model::OperationState::Sending(model::PrinterActionKind::MachineControl));
                             if matches!(command.action, crate::shared::control::MachineAction::ExtrudeFilament { target_c: Some(_), .. }) {
                                 pending_extrusion = Some(crate::shared::control::ExtrusionWait::new(command, projection.state.generation, context.telemetry.borrow().job_generation, projection.observed_at.unwrap()));
@@ -1753,10 +1729,7 @@ async fn bridge(
                                 pending_refresh = refresh;
                             }
                         }
-                        Err(error) => {
-                            let error = match error { mpsc::error::TrySendError::Full(_) => ControlError::Busy, mpsc::error::TrySendError::Closed(_) => ControlError::Disconnected };
-                            let _ = command.reply.send(ControlResult::Rejected(error));
-                        }
+                        Err(error) => { let _ = command.reply.send(ControlResult::Rejected(error)); }
                     }}
                 }
             }
@@ -1782,7 +1755,7 @@ async fn bridge(
                 let result = projection.action(action, &context.telemetry.borrow()).and_then(|action| operations.actions.try_send(action).map_err(|_| "Hay una acción pendiente. No se envió otra.".to_owned()));
                 match result {
                     Ok(()) if priority => {
-                        pending_ticket = None;
+                        pending_result = None;
                         if let Some(reply) = pending_control.take() {
                             let _ = reply.send(crate::shared::control::ControlResult::Unknown);
                         }
