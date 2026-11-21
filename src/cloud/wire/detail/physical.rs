@@ -4,7 +4,7 @@ use std::time::Instant;
 use serde_json::{Value, json};
 
 use super::{Fields, MAX_ELEMENTS, WireDetail, element_id};
-use crate::shared::control::MachineActionKind as A;
+use crate::shared::control::{MAX_EXTRUSION_MM, MachineActionKind as A};
 use crate::shared::telemetry::ElementId;
 use crate::shared::workspace::{DetailState, DeviceKind};
 use crate::state::{LanConnection, PrintStatus, PrinterState};
@@ -134,13 +134,16 @@ impl WireDetail {
                         .filter(|limit| limit.is_finite() && *limit > 0.0)
                 {
                     let fields = self.elements.entry(("nozzles", id)).or_default();
-                    fields.insert("extrusion_limit_mm".into(), json!(limit));
+                    fields.insert(
+                        "extrusion_limit_mm".into(),
+                        json!(limit.min(MAX_EXTRUSION_MM)),
+                    );
                     insert_list(fields, "actions", &[A::ExtrudeFilament]);
                 }
             }
         }
 
-        if permission.reachable {
+        if permission.reachable || machine.current_supply.is_some() || !machine.dryers.is_empty() {
             let mut published = BTreeSet::new();
             let base_ids = super::super::technical::unique_ids(
                 state
@@ -178,11 +181,12 @@ impl WireDetail {
                 ]
                 .into_iter()
                 .filter(|action| {
-                    (*action == A::CancelFilamentOperation
-                        || (permission.physical
-                            && !busy
-                            && idle
-                            && (*action != A::UnloadFilament || current)))
+                    permission.reachable
+                        && (*action == A::CancelFilamentOperation
+                            || (permission.physical
+                                && !busy
+                                && idle
+                                && (*action != A::UnloadFilament || current)))
                         && supply.availability(*action, now).is_ok()
                 })
                 .collect::<Vec<_>>();
@@ -230,7 +234,7 @@ impl WireDetail {
                                 && dryer.limits.is_some(),
                             A::StartDrying,
                         ),
-                        (dryer.can_stop, A::StopDrying),
+                        (permission.reachable && dryer.can_stop, A::StopDrying),
                     ]
                     .into_iter()
                     .filter_map(|(available, action)| available.then_some(action))
