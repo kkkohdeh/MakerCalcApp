@@ -676,7 +676,9 @@ pub(super) fn dispatch_command(
         (CommandAction::PausePrint, None, PrintStatus::Printing) => {
             PrinterAction::PausePrint(context)
         }
-        (CommandAction::ResumePrint, None, PrintStatus::Paused) => {
+        (CommandAction::ResumePrint, None, PrintStatus::Paused)
+            if state.permits_remote_physical() =>
+        {
             PrinterAction::ResumePrint(context)
         }
         (CommandAction::CancelPrint, None, PrintStatus::Printing | PrintStatus::Paused) => {

@@ -44,6 +44,8 @@ pub(crate) struct PersistedConfig {
 pub(crate) struct PrinterConfig {
     pub(crate) local_id: LocalPrinterId,
     pub(crate) name: String,
+    #[serde(default)]
+    pub(crate) remote_physical: bool,
     pub(crate) connection: MoonrakerConnection,
 }
 
@@ -160,6 +162,7 @@ pub(crate) enum MoonrakerAuth {
 #[derive(Clone)]
 pub(crate) struct PrinterDraft {
     pub(crate) name: String,
+    pub(crate) remote_physical: bool,
     pub(crate) host: String,
     pub(crate) port: u16,
     pub(crate) tls: bool,
@@ -293,6 +296,7 @@ impl PersistedConfig {
         self.printers.push(PrinterConfig {
             local_id,
             name: draft.name.trim().to_owned(),
+            remote_physical: draft.remote_physical,
             connection: MoonrakerConnection {
                 protocol,
                 host: draft.host.trim().to_owned(),
@@ -426,6 +430,7 @@ impl PersistedConfig {
             .ok_or_else(|| ConfigError::Validation("la impresora ya no existe".to_owned()))?;
 
         printer.name = draft.name.trim().to_owned();
+        printer.remote_physical = draft.remote_physical;
         printer.connection.protocol = protocol;
         if protocol != Protocol::Moonraker {
             printer.connection.chamber_temperature_sensor = None;

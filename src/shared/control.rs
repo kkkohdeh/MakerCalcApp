@@ -413,6 +413,8 @@ impl RemoteSession {
 
         self.0.strong_count() != 0
             && state.controls.remote
+            && (!matches!(action, A::SetAutoShutdown { enabled: true, .. })
+                || state.permits_remote_physical())
             && matches!(
                 action,
                 A::SetLightBrightness { .. }

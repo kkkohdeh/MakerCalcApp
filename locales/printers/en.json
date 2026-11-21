@@ -218,6 +218,7 @@
       "add_title": "Add printer",
       "tls": "HTTPS / TLS (valid certificate)",
       "trusted_lan": "Trust local network (connect without an API key)",
+      "remote_physical": "Allow physical controls from the web",
       "trusted_lan_remove": "Warning: saving with “Trust local network” removes the saved API key and connects without authentication.",
       "trusted_lan_help": "Direct connection without an API key. Turn this off if your Moonraker server requires authentication.",
       "back": "← Back to search",

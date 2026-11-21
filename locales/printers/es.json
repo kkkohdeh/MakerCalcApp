@@ -218,6 +218,7 @@
       "add_title": "Agregar impresora",
       "tls": "HTTPS / TLS (certificado válido)",
       "trusted_lan": "Confiar en la red local (conectar sin clave de API)",
+      "remote_physical": "Permitir controles físicos desde la web",
       "trusted_lan_remove": "Aviso: al guardar con «Confiar en la red local» se eliminará la clave de API guardada y se conectará sin autenticación.",
       "trusted_lan_help": "Conexión directa sin clave de API. Desactiva esta opción si tu servidor Moonraker requiere autenticación.",
       "back": "← Volver a búsqueda",

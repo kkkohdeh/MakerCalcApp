@@ -612,8 +612,9 @@ impl EdgeActor {
         if printer.connection.protocol == Protocol::Bambulab {
             initial_state.controls = Default::default();
         }
-        let (state_sender, state_receiver) = watch::channel(initial_state);
         let (driver_shutdown_sender, driver_shutdown) = watch::channel(false);
+        initial_state.remote_physical = printer.remote_physical.then(|| driver_shutdown.clone());
+        let (state_sender, state_receiver) = watch::channel(initial_state);
         let (detail, detail_io) = make_detail_channels();
         let (operation, operation_io) = make_operation_channels();
         let (camera, camera_io) = make_camera_channels();
@@ -762,6 +763,7 @@ impl EdgeActor {
                     crate::config::MoonrakerAuth::TrustedLan
                 ),
                 credential_status,
+                remote_physical: printer.remote_physical,
                 light_bindings: printer.connection.light_bindings.clone(),
             };
             let metadata = crate::shared::printer::PrinterLocalMetadata {

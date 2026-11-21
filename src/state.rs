@@ -37,6 +37,7 @@ pub(crate) struct PrinterState {
     pub(crate) job_generation: u64,
     pub(crate) connection_epoch: u64,
     pub(crate) controls: crate::shared::workspace::PrinterControls,
+    pub(crate) remote_physical: Option<tokio::sync::watch::Receiver<bool>>,
     pub(crate) snapshot: Option<Snapshot>,
     /// True only after a validated snapshot in the current LAN session.
     pub(crate) telemetry_ready: bool,
@@ -55,6 +56,14 @@ pub(crate) enum MachineJobTarget {
 }
 
 impl PrinterState {
+    pub(crate) fn permits_remote_physical(&self) -> bool {
+        self.controls.remote
+            && self
+                .remote_physical
+                .as_ref()
+                .is_some_and(|shutdown| !*shutdown.borrow() && shutdown.has_changed().is_ok())
+    }
+
     pub(crate) fn machine_job_target(&self) -> MachineJobTarget {
         match self.telemetry.print_state {
             PrintStatus::Printing | PrintStatus::Paused => {
@@ -254,6 +263,7 @@ impl PrinterState {
             job_generation: 0,
             connection_epoch: 0,
             controls: crate::shared::workspace::PrinterControls::STANDARD,
+            remote_physical: None,
             snapshot: None,
             telemetry_ready: false,
             telemetry: crate::shared::telemetry::PrinterTelemetry::default(),

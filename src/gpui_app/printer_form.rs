@@ -5,6 +5,7 @@ use super::components::hover_card::HoverCard;
 use super::components::input::Input;
 use super::components::radio_group::{Radio, RadioGroup};
 use super::components::scroll_area::ScrollAreaExt as _;
+use super::components::switch::Switch;
 use crate::i18n::t;
 use gpui_kit::base::{
     Align, FocusTrapElement as _, Placement, StyledExt as _, TestSupportExt as _,
@@ -41,6 +42,7 @@ pub(crate) struct PrinterForm {
     pub(crate) serial_number: Entity<InputState>,
     pub(crate) check_code: Entity<InputState>,
     pub(crate) trusted_lan: bool,
+    pub(crate) remote_physical: bool,
     pub(crate) tls: bool,
     pub(crate) discovered: Option<Candidate>,
     pub(crate) credential_status: CredentialStatus,
@@ -133,6 +135,7 @@ impl MakerCalcGpuiApp {
                 InputState::new(window, cx).placeholder(t!("printers.form.check_code.placeholder"))
             }),
             trusted_lan: true,
+            remote_physical: false,
             tls: false,
             discovered: None,
             credential_status: CredentialStatus::None,
@@ -220,6 +223,7 @@ impl MakerCalcGpuiApp {
                 .new(|cx| InputState::new(window, cx).placeholder(ff_placeholder.clone())),
             check_code: cx.new(|cx| InputState::new(window, cx).placeholder(ff_placeholder)),
             trusted_lan: view.trusted_lan,
+            remote_physical: view.remote_physical,
             tls: view.tls,
             discovered: None,
             credential_status: view.credential_status,
@@ -385,6 +389,7 @@ impl MakerCalcGpuiApp {
             tls: form.tls,
             api_key,
             trusted_lan,
+            remote_physical: form.remote_physical,
             protocol: Some(form.protocol),
             light_bindings,
         };
@@ -840,6 +845,23 @@ impl MakerCalcGpuiApp {
                                         )
                                     })
                                     .child(credentials)
+                                    .when(editing, |panel| {
+                                        panel.child(
+                                            Switch::new("printer-remote-physical")
+                                                .label(
+                                                    t!("printers.form.remote_physical")
+                                                        .into_owned(),
+                                                )
+                                                .checked(form.remote_physical)
+                                                .disabled(self.mutation_pending)
+                                                .on_change(cx.listener(|app, value, _, cx| {
+                                                    if let Some(form) = app.printer_form.as_mut() {
+                                                        form.remote_physical = *value;
+                                                        cx.notify();
+                                                    }
+                                                })),
+                                        )
+                                    })
                             })
                             .when_some(self.mutation_error.as_ref(), |panel, error| {
                                 panel.child(super::feedback::error_alert(

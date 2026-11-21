@@ -83,6 +83,7 @@ pub(crate) struct EditableConnectionView {
     pub(crate) port: u16,
     pub(crate) tls: bool,
     pub(crate) trusted_lan: bool,
+    pub(crate) remote_physical: bool,
     pub(crate) credential_status: CredentialStatus,
     pub(crate) light_bindings: MoonrakerLightBindings,
 }
