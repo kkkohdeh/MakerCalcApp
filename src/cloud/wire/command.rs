@@ -140,6 +140,17 @@ impl Command {
             (matches.next().is_none() && device.actions.contains(&action)).then_some(device.id)
         };
         let resolve_supply = |id, kind| {
+            if state
+                .telemetry
+                .filament_supplies
+                .iter()
+                .flatten()
+                .filter(|supply| supply.id == id)
+                .count()
+                != 1
+            {
+                return None;
+            }
             let mut matches = detail
                 .machine
                 .supplies
@@ -245,11 +256,13 @@ impl Command {
             }
             Self::SetDeviceName { name } if valid_label(&name, 64) => A::SetDeviceName { name },
             Self::HomeAxes { axes } => A::HomeAxes { axes },
-            Self::MoveAxisRelative { axis, distance_mm } => A::MoveAxisRelative {
-                axis,
-                distance_mm,
-                speed_mm_s: None,
-            },
+            Self::MoveAxisRelative { axis, distance_mm } if detail.machine.remote_jog => {
+                A::MoveAxisRelative {
+                    axis,
+                    distance_mm,
+                    speed_mm_s: None,
+                }
+            }
             Self::DisableMotors if detail.machine.motion_idle == Some(true) => A::DisableMotors,
             Self::RunCalibration { kind }
                 if detail.machine.calibrations.contains(&kind)
@@ -265,6 +278,14 @@ impl Command {
                 nozzle_id,
                 length_mm,
             } => {
+                let mut rows = state
+                    .telemetry
+                    .nozzles
+                    .iter()
+                    .filter(|nozzle| nozzle.id == nozzle_id);
+                if !rows.next().is_some_and(|nozzle| nozzle.is_active) || rows.next().is_some() {
+                    return None;
+                }
                 let id = resolve_device(nozzle_id, DeviceKind::Nozzle, K::ExtrudeFilament)?;
                 let nozzle = detail.devices.iter().find(|device| device.id == id)?;
                 let limit = nozzle

@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::Instant;
 
 use serde_json::{Map, Value, json};
 
@@ -13,6 +14,7 @@ pub(super) const MAX_LABEL_BYTES: usize = 1024;
 const MAX_NAME_BYTES: usize = 128;
 
 type Fields = Map<String, Value>;
+mod physical;
 
 /// The allowlisted portion of the normalized detail that crosses the socket.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -22,6 +24,8 @@ pub(in crate::cloud) struct WireDetail {
     extra_elements: BTreeMap<&'static str, Vec<Value>>,
     device: Fields,
     pub(super) technical: Option<Value>,
+    permission: physical::Permission,
+    supply_deadline: Option<Instant>,
 }
 
 impl WireDetail {

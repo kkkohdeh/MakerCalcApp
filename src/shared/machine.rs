@@ -190,7 +190,7 @@ pub(crate) struct DryingCycle {
     pub(crate) duration_hours: u16,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub(crate) struct DryingLimits {
     pub(crate) temperature_c: [u16; 2],
     pub(crate) duration_hours: [u16; 2],
@@ -270,6 +270,8 @@ pub(crate) struct MachineInfo {
     pub(crate) device: DeviceMetadata,
     /// Confirmed motion/interpreter rest; None does not authorize releasing motors.
     pub(crate) motion_idle: Option<bool>,
+    #[serde(skip)]
+    pub(crate) remote_jog: bool,
     /// Absolute applied Z compensation in mm. Not homing origin or head height.
     pub(crate) z_offset_mm: Option<f64>,
     pub(crate) auto_shutdown_enabled: Option<bool>,

@@ -768,6 +768,7 @@ pub(super) fn sync_registry_with_thumbnails(
         let state = printer.receiver.borrow();
         let detail = printer.detail.state.borrow();
         let thumbnail_sha256 = thumbnails.and_then(|session| session.current_hash(printer, &state));
+        let busy = printer.operation.state.borrow().is_pending();
         let thumbnail_supported = thumbnails.is_some_and(|session| session.max_bytes.is_some());
         if let Some(record) = planner.records.get_mut(&printer.id)
             && record.observed.generation == printer.generation
@@ -779,6 +780,7 @@ pub(super) fn sync_registry_with_thumbnails(
             && record.observed.device == printer.device
             && record.observed.thumbnail_sha256.as_deref() == thumbnail_sha256
             && record.observed.thumbnail_supported == thumbnail_supported
+            && record.observed.detail.controls_current(&state, busy, now)
         {
             record.observed.state.last_valid_at = state.last_valid_at;
             continue;
@@ -807,7 +809,8 @@ pub(super) fn sync_registry_with_thumbnails(
                         crate::state::MachineJobTarget::Active(_)
                     )
                     .then_some((state.connection_epoch, state.job_generation)),
-                ),
+                )
+                .project_controls(&detail, &state, busy, now),
             },
             now,
         );

@@ -89,6 +89,25 @@ impl Projection {
                 self.state.machine.actions.push(kind);
             }
         }
+        self.state.machine.remote_jog = self.state.machine.actions.contains(&K::MoveAxisRelative)
+            && source.objects.get("toolhead").is_some_and(|tool| {
+                tool.get("homed_axes")
+                    .and_then(Value::as_str)
+                    .is_some_and(|axes| axes.bytes().any(|axis| matches!(axis, b'x' | b'y' | b'z')))
+                    && ["position", "axis_minimum", "axis_maximum"]
+                        .iter()
+                        .all(|field| {
+                            tool.get(field)
+                                .and_then(Value::as_array)
+                                .is_some_and(|axes| {
+                                    axes.len() >= 3
+                                        && axes
+                                            .iter()
+                                            .take(3)
+                                            .all(|axis| axis.as_f64().is_some_and(f64::is_finite))
+                                })
+                        })
+            });
         // Calibration support is additionally checked per calibration kind at dispatch.
         if self.command_available("BED_MESH_CALIBRATE", source)
             || self.command_available("SHAPER_CALIBRATE", source)
