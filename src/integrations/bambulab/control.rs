@@ -503,7 +503,8 @@ impl Pending {
             if state.connection != LanConnection::Connected {
                 return Err(ControlError::Disconnected);
             }
-            if !detail.live || !fresh_request(state, command.connection_epoch, command.submitted_at)
+            if !command.permits(state, detail.live)
+                || !fresh_request(state, command.connection_epoch, command.submitted_at)
             {
                 return Err(ControlError::StaleResource);
             }
@@ -555,6 +556,7 @@ impl Pending {
         id: u16,
     ) -> Option<(Self, Value)> {
         let prepare = || {
+            command.action.validate()?;
             let kind = command.action.kind();
             let supply_id = match command.action {
                 MachineAction::LoadFilament { supply_id }
@@ -566,7 +568,7 @@ impl Pending {
             }
             if state.connection_epoch != command.connection_epoch
                 || !state.telemetry_ready
-                || !detail.live
+                || !command.permits(state, detail.live)
                 || state.age_ms(Instant::now()).is_none_or(|age| age > 15_000)
                 || command.submitted_at.elapsed() > Duration::from_secs(5)
             {

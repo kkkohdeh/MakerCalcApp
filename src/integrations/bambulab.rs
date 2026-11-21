@@ -109,6 +109,8 @@ pub(crate) async fn run_driver(
             detail: &mut detail,
             actions: &mut actions,
             machine_actions: &mut machine_actions,
+            printer_stops: std::collections::VecDeque::new(),
+            machine_stops: std::collections::VecDeque::new(),
             operations: &operations,
             thumbnails: &thumbnails,
         };
@@ -170,6 +172,8 @@ struct Session<'a> {
     detail: &'a mut DetailState,
     actions: &'a mut mpsc::Receiver<PrinterAction>,
     machine_actions: &'a mut mpsc::Receiver<MachineCommand>,
+    printer_stops: std::collections::VecDeque<PrinterAction>,
+    machine_stops: std::collections::VecDeque<MachineCommand>,
     operations: &'a watch::Sender<OperationState>,
     thumbnails: &'a thumbnail::Thumbnails,
 }
@@ -215,11 +219,16 @@ impl Session<'_> {
                     }
                     continue;
                 }
-                Some(action) = self.actions.recv() => {
+                Some(action) = async {
+                    match self.printer_stops.pop_front() {
+                        Some(stop) => Some(stop),
+                        None => self.actions.recv().await,
+                    }
+                } => {
                     let Some((action, remote)) = action.into_permitted(&self.state_sender.borrow()) else {
                         continue;
                     };
-                    if pending.is_none() {
+                    if pending.is_none() || (remote.is_some() && action.is_stop()) {
                         let Some(id) = packet_id.checked_add(1) else {
                             self.finish_action(OperationState::Rejected {
                                 action: action.kind(),
@@ -235,13 +244,16 @@ impl Session<'_> {
                             None
                         };
                         if let Some((prepared, payload)) = command {
+                            if let Some(previous) = pending.take() {
+                                previous.finish(ControlResult::Unknown);
+                            }
                             self.operations.send_replace(OperationState::Sending(prepared.kind));
                             packet_id = id;
                             if let Err(error) = connection.send_control(id, &payload).await {
                                 return (error, delivered);
                             }
                             pending = Some(prepared);
-                        } else {
+                        } else if pending.is_none() {
                             self.finish_action(OperationState::Rejected {
                                 action: action.kind(),
                                 message: t!("printers.bambulab.errors.control_unavailable").into_owned(),
@@ -250,9 +262,14 @@ impl Session<'_> {
                     }
                     continue;
                 }
-                Some(command) = self.machine_actions.recv() => {
+                Some(command) = async {
+                    match self.machine_stops.pop_front() {
+                        Some(stop) => Some(stop),
+                        None => self.machine_actions.recv().await,
+                    }
+                } => {
                     if command.reply.is_closed() { continue; }
-                    if pending.is_some() {
+                    if pending.is_some() && !(command.remote.is_some() && command.action.is_stop()) {
                         let _ = command.reply.send(ControlResult::Rejected(ControlError::Busy));
                         continue;
                     }
@@ -275,6 +292,9 @@ impl Session<'_> {
                         }
                     };
                     if let Some((prepared, payload)) = prepared {
+                        if let Some(previous) = pending.take() {
+                            previous.finish(ControlResult::Unknown);
+                        }
                         self.operations.send_replace(OperationState::Sending(prepared.kind));
                         packet_id = id;
                         if let Err(error) = connection.send_control(id, &payload).await {
@@ -375,8 +395,23 @@ impl Session<'_> {
     }
 
     fn finish_action(&mut self, result: OperationState) {
-        while self.actions.try_recv().is_ok() {}
-        while let Ok(command) = self.machine_actions.try_recv() {
+        for _ in 0..self.actions.max_capacity() {
+            let Ok(action) = self.actions.try_recv() else {
+                break;
+            };
+            if action.is_remote_stop() && self.printer_stops.len() < 4 {
+                self.printer_stops.push_back(action);
+            }
+        }
+        for _ in 0..self.machine_actions.max_capacity() {
+            let Ok(command) = self.machine_actions.try_recv() else {
+                break;
+            };
+            if command.remote.is_some() && command.action.is_stop() && self.machine_stops.len() < 2
+            {
+                self.machine_stops.push_back(command);
+                continue;
+            }
             let _ = command
                 .reply
                 .send(ControlResult::Rejected(ControlError::Busy));
