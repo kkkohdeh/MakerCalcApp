@@ -216,6 +216,9 @@ impl Session<'_> {
                     continue;
                 }
                 Some(action) = self.actions.recv() => {
+                    let Some((action, remote)) = action.into_permitted(&self.state_sender.borrow()) else {
+                        continue;
+                    };
                     if pending.is_none() {
                         let Some(id) = packet_id.checked_add(1) else {
                             self.finish_action(OperationState::Rejected {
@@ -224,7 +227,7 @@ impl Session<'_> {
                             });
                             return (mqtt::Error::Protocol("packet identifiers exhausted"), delivered);
                         };
-                        let command = if !matches!(action, PrinterAction::SetTemperatureTarget { .. }) || self.detail.live {
+                        let command = if !matches!(action, PrinterAction::SetTemperatureTarget { .. }) || self.detail.live || remote.is_some() {
                             control::Pending::prepare(
                                 &action, &self.state_sender.borrow(), report.value(), id,
                             )

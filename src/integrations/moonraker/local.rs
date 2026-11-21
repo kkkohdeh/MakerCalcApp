@@ -33,6 +33,10 @@ pub(crate) use crate::shared::workspace::{HeaterKind, PrintControlContext};
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum PrinterAction {
+    Remote {
+        action: Box<Self>,
+        permit: crate::shared::control::RemoteSession,
+    },
     MachineControl {
         control: Box<super::adapter::control::PreparedControl>,
     },
@@ -65,6 +69,7 @@ pub(crate) enum PrinterAction {
 impl PrinterAction {
     pub(crate) fn kind(&self) -> PrinterActionKind {
         match self {
+            Self::Remote { action, .. } => action.kind(),
             Self::StartPrint { .. } => PrinterActionKind::StartPrint,
             Self::PausePrint(..) => PrinterActionKind::PausePrint,
             Self::ResumePrint(..) => PrinterActionKind::ResumePrint,
@@ -182,7 +187,9 @@ pub(crate) fn build_control_request(
             ("printer.gcode.script", Some(json!({ "script": name })))
         }
         PrinterAction::UploadGcode { .. } => return Err(ControlError::Upload),
-        PrinterAction::MachineControl { .. } => return Err(ControlError::Machine),
+        PrinterAction::MachineControl { .. } | PrinterAction::Remote { .. } => {
+            return Err(ControlError::Machine);
+        }
     };
     let mut request = json!({"jsonrpc":"2.0", "id":id, "method":method});
     if let Some(params) = params {

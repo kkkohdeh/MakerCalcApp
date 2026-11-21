@@ -1800,6 +1800,9 @@ async fn run_detail_handler(
                 let Some(action) = action_opt else {
                     break;
                 };
+                let Some((action, remote)) = action.into_permitted(&state_receiver.borrow()) else {
+                    continue;
+                };
                 if operation_io.state.borrow().is_pending() {
                     continue;
                 }
@@ -1820,6 +1823,7 @@ async fn run_detail_handler(
                     continue;
                 }
                 match action {
+                    PrinterAction::Remote { .. } => continue,
                     PrinterAction::StartPrint { file_id, options } => {
                         use crate::shared::workspace::PrintOptionKind as P;
                         let unsupported = [
@@ -1944,7 +1948,7 @@ async fn run_detail_handler(
                         let current_status = state_receiver.borrow().telemetry.print_state;
                         if matches!(current_status, PrintStatus::Printing | PrintStatus::Paused)
                             || target_c > heater.max_target_c()
-                            || !current_state.live
+                            || (remote.is_none() && !current_state.live)
                             || !current_state.temperature_targets.contains(&heater)
                             || !state_receiver.borrow().age_ms(Instant::now()).is_some_and(|age| age <= 15_000)
                             || state_receiver.borrow().connection != LanConnection::Connected

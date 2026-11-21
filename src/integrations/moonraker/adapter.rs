@@ -851,7 +851,13 @@ impl Projection {
         telemetry: &PrinterState,
     ) -> Result<local::PrinterAction, String> {
         use model::PrinterAction as A;
-        Ok(match action {
+        let (action, remote) = action
+            .into_permitted(telemetry)
+            .ok_or_else(|| crate::i18n::t!("printers.actions.state_changed").into_owned())?;
+        let action = match action {
+            A::Remote { .. } => {
+                return Err(crate::i18n::t!("printers.actions.state_changed").into_owned());
+            }
             A::StartPrint { file_id, options } => {
                 if options.first_layer_inspection || options.flow_calibration || options.timelapse {
                     return Err(crate::i18n::t!("printers.print_options.unsupported").into_owned());
@@ -874,7 +880,9 @@ impl Projection {
                 connection_epoch,
                 submitted_at,
             } => {
-                if !self.state.live
+                if (!self.state.live
+                    && !(remote.is_some()
+                        && self.previous.as_ref().is_some_and(|source| source.live)))
                     || matches!(
                         telemetry.telemetry.print_state,
                         PrintStatus::Printing | PrintStatus::Paused
@@ -930,6 +938,13 @@ impl Projection {
                 source,
                 destination,
             },
+        };
+        Ok(match remote {
+            Some(permit) => local::PrinterAction::Remote {
+                action: Box::new(action),
+                permit,
+            },
+            None => action,
         })
     }
 

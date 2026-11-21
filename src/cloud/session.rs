@@ -520,10 +520,10 @@ pub(super) async fn run_session(
                         {
                             let registry = registry.borrow();
                             match command {
-                                Command::PausePrint => dispatch_command(&registry, &printer_id, CommandAction::PausePrint, None),
-                                Command::ResumePrint => dispatch_command(&registry, &printer_id, CommandAction::ResumePrint, None),
-                                Command::CancelPrint => dispatch_command(&registry, &printer_id, CommandAction::CancelPrint, None),
-                                Command::ToggleLight { role } => dispatch_command(&registry, &printer_id, CommandAction::ToggleLight, Some(&role)),
+                                Command::PausePrint => dispatch_command(&registry, &printer_id, CommandAction::PausePrint, None, &remote_session),
+                                Command::ResumePrint => dispatch_command(&registry, &printer_id, CommandAction::ResumePrint, None, &remote_session),
+                                Command::CancelPrint => dispatch_command(&registry, &printer_id, CommandAction::CancelPrint, None, &remote_session),
+                                Command::ToggleLight { role } => dispatch_command(&registry, &printer_id, CommandAction::ToggleLight, Some(&role), &remote_session),
                                 Command::Unknown => {}
                                 command => dispatch_machine_command(&registry, &printer_id, command, &remote_session, &mut remote_replies),
                             }
@@ -644,6 +644,7 @@ pub(super) fn dispatch_command(
     printer_id: &str,
     action: CommandAction,
     role: Option<&str>,
+    session: &std::sync::Arc<()>,
 ) {
     let role = match role {
         None => None,
@@ -703,7 +704,13 @@ pub(super) fn dispatch_command(
         _ => return,
     };
     // Best effort, at most once: never wait, retry, or replay after reconnecting.
-    let _ = printer.operation.actions.try_send(action);
+    let permit = crate::shared::control::RemoteSession(std::sync::Arc::downgrade(session));
+    if permit.permits_printer(&action, &state) {
+        let _ = printer.operation.actions.try_send(PrinterAction::Remote {
+            action: Box::new(action),
+            permit,
+        });
+    }
 }
 
 pub(super) fn sync_registry(

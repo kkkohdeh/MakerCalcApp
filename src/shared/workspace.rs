@@ -516,6 +516,10 @@ impl PrintControlContext {
 
 #[derive(Clone, Debug)]
 pub(crate) enum PrinterAction {
+    Remote {
+        action: Box<Self>,
+        permit: super::control::RemoteSession,
+    },
     StartPrint {
         file_id: ResourceId,
         options: StartPrintOptions,
@@ -541,8 +545,22 @@ pub(crate) enum PrinterAction {
     },
 }
 impl PrinterAction {
+    pub(crate) fn into_permitted(
+        self,
+        state: &crate::state::PrinterState,
+    ) -> Option<(Self, Option<super::control::RemoteSession>)> {
+        match self {
+            Self::Remote { action, permit } if permit.permits_printer(&action, state) => {
+                Some((*action, Some(permit)))
+            }
+            Self::Remote { .. } => None,
+            action => Some((action, None)),
+        }
+    }
+
     pub(crate) fn kind(&self) -> PrinterActionKind {
         match self {
+            Self::Remote { action, .. } => action.kind(),
             Self::StartPrint { .. } => PrinterActionKind::StartPrint,
             Self::PausePrint(..) => PrinterActionKind::PausePrint,
             Self::ResumePrint(..) => PrinterActionKind::ResumePrint,

@@ -1129,6 +1129,24 @@ async fn send_printer_action(
     operation_io: &OperationIo,
     action: PrinterAction,
 ) -> Result<(), MoonrakerError> {
+    let (action, remote) = match action {
+        PrinterAction::Remote { action, permit } => {
+            let physical = match *action {
+                PrinterAction::ResumePrint(_) => true,
+                PrinterAction::SetTemperatureTarget { target_c, .. } => target_c > 0,
+                PrinterAction::PausePrint(_)
+                | PrinterAction::CancelPrint(_)
+                | PrinterAction::SetLightOutput { .. }
+                | PrinterAction::RunLightMacro { .. } => false,
+                _ => return Ok(()),
+            };
+            if !permit.permits_intent(state, physical) {
+                return Ok(());
+            }
+            (*action, true)
+        }
+        action => (action, false),
+    };
     let kind = action.kind();
     if operation_io.state.borrow().is_pending() {
         let _ = operation_io.state.send_replace(OperationState::Rejected {
@@ -1152,7 +1170,13 @@ async fn send_printer_action(
         start_upload(file_reader, operation_io, source, destination);
         return Ok(());
     }
-    let mut request = match runtime_control_request(*next_id, &action, detail, state) {
+    let request = runtime_control_request(*next_id, &action, detail, state).and_then(|request| {
+        if remote {
+            validate_remote_script(&request, detail)?;
+        }
+        Ok(request)
+    });
+    let mut request = match request {
         Ok(request) => request,
         Err(error) => {
             let _ = operation_io.state.send_replace(OperationState::Rejected {
@@ -1327,24 +1351,36 @@ fn runtime_control_request(
         {
             let request = adapter::control::build_request(id, control, &detail.state, state)
                 .map_err(|_| local::ControlError::Machine)?;
-            if control.is_remote()
-                && let Some(command) = request
-                    .pointer("/params/script")
-                    .and_then(Value::as_str)
-                    .and_then(|script| script.split_ascii_whitespace().next())
-                && detail.objects.iter().any(|object| {
-                    object.split_once(' ').is_some_and(|(kind, name)| {
-                        kind == "gcode_macro" && name.eq_ignore_ascii_case(command)
-                    })
-                })
-            {
-                return Err(local::ControlError::Machine);
+            if control.is_remote() {
+                validate_remote_script(&request, detail)?;
             }
             Ok(request)
         }
         PrinterAction::MachineControl { .. } => Err(local::ControlError::Machine),
         _ => build_control_request(id, action),
     }
+}
+
+fn validate_remote_script(
+    request: &Value,
+    detail: &DetailSession,
+) -> Result<(), local::ControlError> {
+    let commands = request
+        .pointer("/params/script")
+        .and_then(Value::as_str)
+        .into_iter()
+        .flat_map(str::lines)
+        .filter_map(|line| line.split_ascii_whitespace().next());
+    for command in commands {
+        if detail.objects.iter().any(|object| {
+            object.split_once(' ').is_some_and(|(kind, name)| {
+                kind == "gcode_macro" && name.eq_ignore_ascii_case(command)
+            })
+        }) {
+            return Err(local::ControlError::Machine);
+        }
+    }
+    Ok(())
 }
 
 fn action_response_timeout(action: &PrinterAction) -> Duration {
@@ -1357,6 +1393,7 @@ fn action_response_timeout(action: &PrinterAction) -> Duration {
 fn action_allowed(action: &PrinterAction, state: &PrinterState) -> Result<(), String> {
     let status = state.telemetry.print_state;
     let allowed = match action {
+        PrinterAction::Remote { .. } => false,
         PrinterAction::MachineControl { .. } => true, // Revalidated against live detail at dispatch.
         PrinterAction::StartPrint { .. } => status == PrintStatus::Idle,
         PrinterAction::PausePrint(context) => state.permits_print_control(

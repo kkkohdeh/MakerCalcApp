@@ -404,6 +404,32 @@ impl PartialEq for RemoteSession {
 }
 
 impl RemoteSession {
+    pub(crate) fn permits_intent(
+        &self,
+        state: &crate::state::PrinterState,
+        physical: bool,
+    ) -> bool {
+        self.0.strong_count() != 0
+            && state.controls.remote
+            && (!physical || state.permits_remote_physical())
+    }
+
+    pub(crate) fn permits_printer(
+        &self,
+        action: &super::workspace::PrinterAction,
+        state: &crate::state::PrinterState,
+    ) -> bool {
+        use super::workspace::PrinterAction as A;
+        match action {
+            A::ResumePrint(_) => self.permits_intent(state, true),
+            A::SetTemperatureTarget { target_c, .. } => self.permits_intent(state, *target_c > 0),
+            A::PausePrint(_) | A::CancelPrint(_) | A::ToggleLight { .. } => {
+                self.permits_intent(state, false)
+            }
+            _ => false,
+        }
+    }
+
     pub(crate) fn permits(
         &self,
         action: &MachineAction,
@@ -411,25 +437,24 @@ impl RemoteSession {
     ) -> bool {
         use MachineAction as A;
 
-        self.0.strong_count() != 0
-            && state.controls.remote
-            && (!matches!(action, A::SetAutoShutdown { enabled: true, .. })
-                || state.permits_remote_physical())
-            && matches!(
-                action,
-                A::SetLightBrightness { .. }
-                    | A::SetFanPower { .. }
-                    | A::SetFanEnabled { .. }
-                    | A::SetPrintSpeedOverride { .. }
-                    | A::SetFlowOverride { .. }
-                    | A::SetZOffset { .. }
-                    | A::SetAutoShutdown { .. }
-                    | A::SetPrintQueuePaused { paused: true }
-                    | A::RemoveQueuedPrint { .. }
-                    | A::ExcludePrintObject { .. }
-                    | A::AcknowledgePrinterAlert { .. }
-                    | A::SetDeviceName { .. }
-            )
+        self.permits_intent(
+            state,
+            matches!(action, A::SetAutoShutdown { enabled: true, .. }),
+        ) && matches!(
+            action,
+            A::SetLightBrightness { .. }
+                | A::SetFanPower { .. }
+                | A::SetFanEnabled { .. }
+                | A::SetPrintSpeedOverride { .. }
+                | A::SetFlowOverride { .. }
+                | A::SetZOffset { .. }
+                | A::SetAutoShutdown { .. }
+                | A::SetPrintQueuePaused { paused: true }
+                | A::RemoveQueuedPrint { .. }
+                | A::ExcludePrintObject { .. }
+                | A::AcknowledgePrinterAlert { .. }
+                | A::SetDeviceName { .. }
+        )
     }
 }
 
