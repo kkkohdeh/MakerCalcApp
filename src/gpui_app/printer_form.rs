@@ -487,6 +487,10 @@ impl MakerCalcGpuiApp {
         )?;
         let (form, finder) = &presence.value;
         let editing = form.editing.is_some();
+        let remote_supported = form
+            .editing
+            .and_then(|id| self.printers.get(&id))
+            .is_some_and(|printer| printer.state.controls.remote);
         let searching = finder.as_ref().is_some_and(|finder| !finder.confirming);
         let search_panel = searching.then(|| self.render_finder(finder.as_deref(), cx));
         let title = if searching {
@@ -845,7 +849,7 @@ impl MakerCalcGpuiApp {
                                         )
                                     })
                                     .child(credentials)
-                                    .when(editing, |panel| {
+                                    .when(remote_supported, |panel| {
                                         panel.child(
                                             Switch::new("printer-remote-physical")
                                                 .label(
