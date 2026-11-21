@@ -8,6 +8,7 @@ pub(super) struct PendingLoad {
     started: Instant,
     saw_unloading: bool,
     saw_nonterminal_step: bool,
+    remote: Option<crate::shared::control::RemoteSession>,
     reply: oneshot::Sender<ControlResult>,
 }
 
@@ -29,6 +30,7 @@ impl Projection {
         target: ResourceId,
         epoch: u64,
         started: Instant,
+        remote: Option<crate::shared::control::RemoteSession>,
         reply: oneshot::Sender<ControlResult>,
     ) {
         self.pending_load = Some(PendingLoad {
@@ -38,8 +40,15 @@ impl Projection {
             started,
             saw_unloading: false,
             saw_nonterminal_step: matches!(self.station_step, Some(0 | 4 | 5)),
+            remote,
             reply,
         });
+    }
+
+    pub(in crate::integrations::flashforge) fn remote_load_pending(&self) -> bool {
+        self.pending_load
+            .as_ref()
+            .is_some_and(|load| load.remote.is_some())
     }
 
     pub(in crate::integrations::flashforge) fn load_deadline(&self) -> Option<Instant> {
@@ -81,7 +90,14 @@ impl Projection {
             && load.started.elapsed() < Duration::from_secs(180)
             && state.connection == LanConnection::Connected
             && state.connection_epoch == load.epoch
-            && detail.live
+            && load.remote.as_ref().map_or(detail.live, |permit| {
+                permit.permits(
+                    &MachineAction::LoadFilament {
+                        supply_id: load.target,
+                    },
+                    state,
+                )
+            })
             && source.is_some()
             && target.is_some()
             && detail.machine.issues.is_empty()

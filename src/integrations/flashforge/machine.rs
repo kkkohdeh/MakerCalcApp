@@ -855,7 +855,7 @@ impl Projection {
     }
 
     fn supply_block(&self, supply: &SupplyResource, action: K) -> Option<SupplyBlock> {
-        if self.waiting_for_observation() {
+        if self.waiting_for_observation() && action != K::CancelFilamentOperation {
             return Some(SupplyBlock::Busy);
         }
         if self.printing {
@@ -980,7 +980,7 @@ impl Projection {
         if !detail.machine.actions.contains(&action.kind()) {
             return Err(ControlError::Unsupported);
         }
-        if self.waiting_for_observation() {
+        if self.waiting_for_observation() && action.kind() != K::CancelFilamentOperation {
             return Err(ControlError::Busy);
         }
         if self.pending_load.is_some() && action.kind() != K::CancelFilamentOperation {
@@ -1044,12 +1044,10 @@ impl Projection {
             }
         }
         if matches!(action, MachineAction::DisableMotors)
-            && (!detail.live
-                || !matches!(
-                    state.telemetry.print_state,
-                    PrintStatus::Idle | PrintStatus::Completed | PrintStatus::Cancelled
-                )
-                || detail.machine.motion_idle != Some(true)
+            && (!matches!(
+                state.telemetry.print_state,
+                PrintStatus::Idle | PrintStatus::Completed | PrintStatus::Cancelled
+            ) || detail.machine.motion_idle != Some(true)
                 || detail.machine.activity.is_some())
         {
             return Err(ControlError::InvalidState);

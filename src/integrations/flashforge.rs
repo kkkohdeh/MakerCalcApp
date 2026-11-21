@@ -1214,8 +1214,19 @@ async fn fetch_tcp_gcode_list(host: &str) -> Option<Vec<String>> {
     if files.is_empty() { None } else { Some(files) }
 }
 
-fn drain_queued_operations(operation_io: &mut OperationIo) {
-    while let Ok(queued) = operation_io.machine_actions.try_recv() {
+fn drain_queued_operations(
+    operation_io: &mut OperationIo,
+    printer_stops: &mut std::collections::VecDeque<PrinterAction>,
+    machine_stops: &mut std::collections::VecDeque<crate::shared::control::MachineCommand>,
+) {
+    for _ in 0..operation_io.machine_actions.max_capacity() {
+        let Ok(queued) = operation_io.machine_actions.try_recv() else {
+            break;
+        };
+        if queued.remote.is_some() && queued.action.is_stop() && machine_stops.len() < 2 {
+            machine_stops.push_back(queued);
+            continue;
+        }
         let _ = queued
             .reply
             .send(crate::shared::control::ControlResult::Rejected(
@@ -1226,7 +1237,14 @@ fn drain_queued_operations(operation_io: &mut OperationIo) {
         *operation_io.state.borrow(),
         OperationState::Sending(PrinterActionKind::MachineControl)
     );
-    while let Ok(queued) = operation_io.actions.try_recv() {
+    for _ in 0..operation_io.actions.max_capacity() {
+        let Ok(queued) = operation_io.actions.try_recv() else {
+            break;
+        };
+        if queued.is_remote_stop() && printer_stops.len() < 4 {
+            printer_stops.push_back(queued);
+            continue;
+        }
         if !machine_sending {
             let _ = operation_io.state.send_replace(OperationState::Rejected {
                 action: queued.kind(),
@@ -1318,10 +1336,13 @@ async fn dispatch_manual_tcp(
     use crate::shared::control::{ControlError, ControlResult, MachineAction};
 
     let authorize = || {
-        if *shutdown.borrow() || command.reply.is_closed() || !*active.borrow() {
+        let state = state.borrow();
+        if *shutdown.borrow()
+            || command.reply.is_closed()
+            || !command.permits(&state, *active.borrow())
+        {
             return Err(ControlError::InvalidState);
         }
-        let state = state.borrow();
         if command
             .job_target
             .as_ref()
@@ -1383,6 +1404,8 @@ async fn run_detail_handler(
     let mut machine = machine::Projection::default();
     let mut last_operation_finished = None;
     let mut pending_motion = false;
+    let mut printer_stops = std::collections::VecDeque::new();
+    let mut machine_stops = std::collections::VecDeque::new();
     let mut pending_extrusion: Option<crate::shared::control::ExtrusionWait> = None;
     let gcode_list_url = format!("http://{host}:{port}/gcodeList");
     let gcode_list_body = json!({
@@ -1456,7 +1479,11 @@ async fn run_detail_handler(
                         operation_io.state.send_replace(OperationState::Idle);
                     }
                     let _ = command.reply.send(result);
-                    drain_queued_operations(&mut operation_io);
+                    drain_queued_operations(
+                        &mut operation_io,
+                        &mut printer_stops,
+                        &mut machine_stops,
+                    );
                 }
             }
         }
@@ -1524,7 +1551,9 @@ async fn run_detail_handler(
                         };
                     }
                     machine.update(details, state_receiver.borrow().connection_epoch, &host, &mut current_state);
-                    if current_state.live && machine.needs_motor_probe() {
+                    let remote_motion = *detail_io.cloud_summary.borrow()
+                        && state_receiver.borrow().permits_remote_physical();
+                    if (current_state.live || remote_motion) && machine.needs_motor_probe() {
                         let model = machine::motors::probe(&host).await;
                         machine.set_motor_support(model, &mut current_state);
                     }
@@ -1535,7 +1564,11 @@ async fn run_detail_handler(
                         pending_motion = false;
                         operation_io.state.send_replace(OperationState::Idle);
                     }
-                    let next = machine.next_load(&state_receiver.borrow(), &mut current_state);
+                    let next = if machine_stops.is_empty() && operation_io.machine_actions.is_empty() {
+                        machine.next_load(&state_receiver.borrow(), &mut current_state)
+                    } else {
+                        None
+                    };
                     if let Some((payload, reply)) = next {
                         let url = format!("http://{host}:{port}/control");
                         let result = tokio::select! {
@@ -1556,7 +1589,7 @@ async fn run_detail_handler(
                         }
                         machine.refresh_supply_controls(&mut current_state);
                         let _ = reply.send(result);
-                        drain_queued_operations(&mut operation_io);
+                        drain_queued_operations(&mut operation_io, &mut printer_stops, &mut machine_stops);
                     }
                     current_state.revision = current_state.revision.saturating_add(1);
                     let _ = detail_io.state.send_replace(Arc::new(current_state.clone()));
@@ -1570,7 +1603,7 @@ async fn run_detail_handler(
                 let active = *detail_io.active.borrow_and_update();
                 let connected = state_receiver.borrow().connection == LanConnection::Connected;
                 let live = connected && active;
-                if !active {
+                if !active && !machine.remote_load_pending() {
                     pending_extrusion = None;
                     pending_motion = false;
                     if matches!(*operation_io.state.borrow(), OperationState::Sending(PrinterActionKind::MachineControl)) {
@@ -1700,9 +1733,15 @@ async fn run_detail_handler(
                 }
             }
 
-            Some(command) = operation_io.machine_actions.recv() => {
+            Some(command) = async {
+                match machine_stops.pop_front() {
+                    Some(stop) => Some(stop),
+                    None => operation_io.machine_actions.recv().await,
+                }
+            } => {
                 use crate::shared::control::{ControlError, ControlResult, MachineAction};
                 if command.reply.is_closed() { continue; }
+                let priority = command.remote.is_some() && command.action.is_stop();
                 let validation = {
                     let state = state_receiver.borrow();
                     if command.remote.is_some() && !command.permits(&state, false) {
@@ -1712,8 +1751,8 @@ async fn run_detail_handler(
                     } else if command.submitted_at.elapsed() > Duration::from_secs(5)
                         || command.job_target.as_ref().is_some_and(|job| !state.matches_machine_job_target(job)) {
                         Err(ControlError::StaleResource)
-                    } else if last_operation_finished.is_some_and(|at| command.submitted_at <= at)
-                        || operation_io.state.borrow().is_pending() || !operation_io.actions.is_empty() {
+                    } else if !priority && (last_operation_finished.is_some_and(|at| command.submitted_at <= at)
+                        || operation_io.state.borrow().is_pending() || !operation_io.actions.is_empty()) {
                         Err(ControlError::Busy)
                     } else if matches!(command.action, MachineAction::DisableMotors
                         | MachineAction::ExtrudeFilament { speed_mm_s: Some(_), target_c: None, .. }) {
@@ -1753,13 +1792,15 @@ async fn run_detail_handler(
                             operation_io.state.send_replace(OperationState::Sending(PrinterActionKind::MachineControl));
                             for supply in &mut current_state.machine.supplies {
                                 for control in supply.controls.iter_mut().flatten() {
-                                    control.blocked = Some(crate::shared::machine::SupplyBlock::Busy);
+                                    if control.action != crate::shared::control::MachineActionKind::CancelFilamentOperation {
+                                        control.blocked = Some(crate::shared::machine::SupplyBlock::Busy);
+                                    }
                                 }
                             }
                             current_state.revision = current_state.revision.saturating_add(1);
                             detail_io.state.send_replace(Arc::new(current_state.clone()));
                         }
-                        drain_queued_operations(&mut operation_io);
+                        drain_queued_operations(&mut operation_io, &mut printer_stops, &mut machine_stops);
                         result
                     }
                 };
@@ -1773,7 +1814,7 @@ async fn run_detail_handler(
                     continue;
                 }
                 if let (Some(source), crate::shared::control::MachineAction::LoadFilament { supply_id }, ControlResult::Accepted) = (source, &command.action, result) {
-                    machine.defer_load(source, *supply_id, command.connection_epoch, dispatch_started, command.reply);
+                    machine.defer_load(source, *supply_id, command.connection_epoch, dispatch_started, command.remote, command.reply);
                 } else {
                     let _ = command.reply.send(result);
                 }
@@ -1798,17 +1839,23 @@ async fn run_detail_handler(
                 } else { std::future::pending::<()>().await; }
             } => {}
 
-            action_opt = operation_io.actions.recv() => {
+            action_opt = async {
+                match printer_stops.pop_front() {
+                    Some(stop) => Some(stop),
+                    None => operation_io.actions.recv().await,
+                }
+            } => {
                 let Some(action) = action_opt else {
                     break;
                 };
                 let Some((action, remote)) = action.into_permitted(&state_receiver.borrow()) else {
                     continue;
                 };
-                if operation_io.state.borrow().is_pending() {
+                let priority = remote.is_some() && action.is_stop();
+                if !priority && operation_io.state.borrow().is_pending() {
                     continue;
                 }
-                if machine.waiting_for_observation() || machine.load_deadline().is_some() {
+                if !priority && (machine.waiting_for_observation() || machine.load_deadline().is_some()) {
                     operation_io.state.send_replace(OperationState::Rejected { action: action.kind(), message: crate::i18n::t!("common.errors.operation_busy").into_owned() });
                     continue;
                 }
