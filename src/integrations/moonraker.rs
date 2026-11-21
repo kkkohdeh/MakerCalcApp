@@ -460,6 +460,7 @@ enum RpcReply {
 enum RpcPurpose {
     Detail,
     NativeHistory,
+    Subscription,
 }
 enum SessionSignal {
     Continue,
@@ -642,6 +643,7 @@ async fn connect_once(
             shutdown,
             config.api_key.as_deref(),
             expanded,
+            None,
         )
         .await?;
     } else {
@@ -668,6 +670,11 @@ async fn connect_once(
     .await
 }
 
+struct SubscriptionActions<'a> {
+    file_reader: &'a FileReader,
+    operations: &'a mut OperationIo,
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn discover_and_subscribe(
     socket: &mut MoonrakerSocket,
@@ -680,10 +687,11 @@ async fn discover_and_subscribe(
     shutdown: &mut watch::Receiver<bool>,
     api_key: Option<&str>,
     expanded: bool,
+    mut actions: Option<&mut SubscriptionActions<'_>>,
 ) -> Result<(), MoonrakerError> {
-    let listed = send_and_wait(
+    let listed = send_subscription_request(
         socket,
-        *next_id,
+        next_id,
         "printer.objects.list",
         None,
         parser,
@@ -693,9 +701,9 @@ async fn discover_and_subscribe(
         detail_io,
         shutdown,
         api_key,
+        actions.as_deref_mut(),
     )
     .await?;
-    *next_id += 1;
     let RpcReply::Result(listed) = listed else {
         return Err(reply_error(listed));
     };
@@ -716,9 +724,9 @@ async fn discover_and_subscribe(
         .map(|name| (name.to_owned(), Value::Null))
         .collect::<serde_json::Map<_, _>>();
     if !discovery_objects.is_empty() {
-        let discovery = send_and_wait(
+        let discovery = send_subscription_request(
             socket,
-            *next_id,
+            next_id,
             "printer.objects.query",
             Some(json!({"objects":discovery_objects})),
             parser,
@@ -728,16 +736,16 @@ async fn discover_and_subscribe(
             detail_io,
             shutdown,
             api_key,
+            actions.as_deref_mut(),
         )
         .await?;
-        *next_id += 1;
         if let RpcReply::Result(discovery) = discovery {
             record_result_capabilities(detail, "printer.objects.query", &discovery);
         }
     }
-    let subscribed = send_and_wait(
+    let subscribed = send_subscription_request(
         socket,
-        *next_id,
+        next_id,
         "printer.objects.subscribe",
         Some(parser.subscriptions(&detail.objects, expanded)),
         parser,
@@ -747,9 +755,9 @@ async fn discover_and_subscribe(
         detail_io,
         shutdown,
         api_key,
+        actions,
     )
     .await?;
-    *next_id += 1;
     let RpcReply::Result(subscribed) = subscribed else {
         return Err(reply_error(subscribed));
     };
@@ -815,12 +823,13 @@ async fn event_loop(
                 if changed.is_err() { return Ok(()); }
                 let expand = *detail_io.active.borrow();
                 if expand == detail.active { continue; }
+                let mut actions = SubscriptionActions { file_reader, operations: operation_io };
                 if expand {
                     detail.reset_overview(true);
                     publish_detail(detail_io, detail);
-                    let server_info = send_and_wait(
+                    let server_info = send_subscription_request(
                         socket,
-                        *next_id,
+                        next_id,
                         "server.info",
                         None,
                         parser,
@@ -830,9 +839,9 @@ async fn event_loop(
                         detail_io,
                         shutdown,
                         api_key,
+                        Some(&mut actions),
                     )
                     .await?;
-                    *next_id += 1;
                     match server_info {
                         RpcReply::Result(server_info) => {
                             record_result_capabilities(detail, "server.info", &server_info);
@@ -858,14 +867,13 @@ async fn event_loop(
                         }
                     }
                     publish_detail(detail_io, detail);
-                    discover_and_subscribe(socket, next_id, parser, state, sender, detail, detail_io, shutdown, api_key, true).await?;
+                    discover_and_subscribe(socket, next_id, parser, state, sender, detail, detail_io, shutdown, api_key, true, Some(&mut actions)).await?;
                 } else {
                     camera_captures.shutdown().await;
                     camera_io.state.send_replace(Arc::new(CameraState::empty()));
                     detail.reset_overview(false);
                     publish_detail(detail_io, detail);
-                    let subscribed = send_and_wait(socket, *next_id, "printer.objects.subscribe", Some(parser.subscriptions(&detail.objects, false)), parser, state, sender, detail, detail_io, shutdown, api_key).await?;
-                    *next_id += 1;
+                    let subscribed = send_subscription_request(socket, next_id, "printer.objects.subscribe", Some(parser.subscriptions(&detail.objects, false)), parser, state, sender, detail, detail_io, shutdown, api_key, Some(&mut actions)).await?;
                     let RpcReply::Result(subscribed) = subscribed else { return Err(reply_error(subscribed)); };
                     apply_subscription_base(&subscribed, parser, state, sender, detail, detail_io, api_key, false)?;
                 }
@@ -2016,6 +2024,49 @@ fn runtime_request_allowed(method: &str, params: Option<&Value>, detail: &Detail
             .and_then(Value::as_str)
             .is_some_and(|uid| detail.cameras.contains(uid)),
         _ => true,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn send_subscription_request(
+    socket: &mut MoonrakerSocket,
+    next_id: &mut u64,
+    method: &str,
+    params: Option<Value>,
+    parser: &mut StatusParser,
+    state: &mut PrinterState,
+    sender: &watch::Sender<PrinterState>,
+    detail: &mut DetailSession,
+    detail_io: &mut DetailIo,
+    shutdown: &mut watch::Receiver<bool>,
+    api_key: Option<&str>,
+    actions: Option<&mut SubscriptionActions<'_>>,
+) -> Result<RpcReply, MoonrakerError> {
+    let id = *next_id;
+    *next_id += 1;
+    if let Some(actions) = actions {
+        send_json(socket, id, method, params).await?;
+        wait_for_detail_reply(
+            socket,
+            id,
+            next_id,
+            RpcPurpose::Subscription,
+            parser,
+            state,
+            sender,
+            detail,
+            detail_io,
+            shutdown,
+            api_key,
+            actions.file_reader,
+            actions.operations,
+        )
+        .await
+    } else {
+        send_and_wait(
+            socket, id, method, params, parser, state, sender, detail, detail_io, shutdown, api_key,
+        )
+        .await
     }
 }
 
