@@ -1,9 +1,12 @@
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
-use crate::shared::control::{MachineAction, MachineActionKind, valid_label};
+use crate::shared::control::{
+    Axis, CalibrationKind, MachineAction, MachineActionKind, valid_label,
+};
+use crate::shared::machine::DryingCycle;
 use crate::shared::telemetry::ElementId;
-use crate::shared::workspace::{DetailState, DeviceKind, ReadStatus, ResourceId};
+use crate::shared::workspace::{DetailState, DeviceKind, HeaterKind, ReadStatus, ResourceId};
 use crate::state::{MachineJobTarget, PrinterState};
 
 #[derive(Debug, Deserialize)]
@@ -55,6 +58,43 @@ pub(in crate::cloud) enum Command {
     SetDeviceName {
         name: String,
     },
+    SetTemperatureTarget {
+        heater: HeaterKind,
+        target_c: u16,
+    },
+    HomeAxes {
+        axes: Vec<Axis>,
+    },
+    MoveAxisRelative {
+        axis: Axis,
+        distance_mm: f64,
+    },
+    DisableMotors,
+    ExtrudeFilament {
+        nozzle_id: ElementId,
+        length_mm: f64,
+    },
+    RunCalibration {
+        kind: CalibrationKind,
+    },
+    ConfirmBuildPlateCleared,
+    LoadFilament {
+        supply_id: ElementId,
+    },
+    UnloadFilament {
+        supply_id: ElementId,
+    },
+    CancelFilamentOperation {
+        supply_id: ElementId,
+    },
+    StartDrying {
+        dryer_id: ElementId,
+        temperature_c: u16,
+        duration_hours: u16,
+    },
+    StopDrying {
+        dryer_id: ElementId,
+    },
     #[serde(other)]
     Unknown,
 }
@@ -62,7 +102,15 @@ pub(in crate::cloud) enum Command {
 impl Command {
     pub(in crate::cloud) fn parse(action: Value, mut params: Map<String, Value>) -> Option<Self> {
         let name = action.as_str()?;
-        if matches!(name, "pause_print" | "resume_print" | "cancel_print") && !params.is_empty() {
+        if matches!(
+            name,
+            "pause_print"
+                | "resume_print"
+                | "cancel_print"
+                | "disable_motors"
+                | "confirm_build_plate_cleared"
+        ) && !params.is_empty()
+        {
             return None;
         }
         if name == "set_auto_shutdown" && params.get("delay_s").is_some_and(Value::is_null) {
@@ -90,6 +138,26 @@ impl Command {
                 .filter(|device| device.telemetry_id == Some(id) && device.kind == kind);
             let device = matches.next()?;
             (matches.next().is_none() && device.actions.contains(&action)).then_some(device.id)
+        };
+        let resolve_supply = |id, kind| {
+            let mut matches = detail
+                .machine
+                .supplies
+                .iter()
+                .filter(|supply| supply.reading.id == id);
+            let supply = matches.next()?;
+            (matches.next().is_none()
+                && supply.availability(kind, std::time::Instant::now()).is_ok())
+            .then_some(supply.id)
+        };
+        let resolve_dryer = |id| {
+            let mut matches = detail
+                .machine
+                .dryers
+                .iter()
+                .filter(|dryer| dryer.telemetry_id == id);
+            let dryer = matches.next()?;
+            matches.next().is_none().then_some(dryer)
         };
         let action = match self {
             Self::SetLightBrightness { light_id, percent } => {
@@ -127,7 +195,7 @@ impl Command {
                 enabled: false,
                 delay_s: 0,
             },
-            Self::SetPrintQueuePaused { paused: true } => A::SetPrintQueuePaused { paused: true },
+            Self::SetPrintQueuePaused { paused } => A::SetPrintQueuePaused { paused },
             Self::RemoveQueuedPrint { queue_item_id }
                 if detail.queue.status == ReadStatus::Ready =>
             {
@@ -176,6 +244,83 @@ impl Command {
                 A::AcknowledgePrinterAlert { alert_id: resource }
             }
             Self::SetDeviceName { name } if valid_label(&name, 64) => A::SetDeviceName { name },
+            Self::HomeAxes { axes } => A::HomeAxes { axes },
+            Self::MoveAxisRelative { axis, distance_mm } => A::MoveAxisRelative {
+                axis,
+                distance_mm,
+                speed_mm_s: None,
+            },
+            Self::DisableMotors if detail.machine.motion_idle == Some(true) => A::DisableMotors,
+            Self::RunCalibration { kind }
+                if detail.machine.calibrations.contains(&kind)
+                    && detail
+                        .machine
+                        .calibration_readiness
+                        .is_some_and(|ready| ready.check().is_ok()) =>
+            {
+                A::RunCalibration { kind }
+            }
+            Self::ConfirmBuildPlateCleared => A::ConfirmBuildPlateCleared,
+            Self::ExtrudeFilament {
+                nozzle_id,
+                length_mm,
+            } => {
+                let id = resolve_device(nozzle_id, DeviceKind::Nozzle, K::ExtrudeFilament)?;
+                let nozzle = detail.devices.iter().find(|device| device.id == id)?;
+                let limit = nozzle
+                    .extrusion_limit_mm
+                    .filter(|limit| limit.is_finite() && *limit > 0.0)?;
+                if nozzle.can_extrude != Some(true) || length_mm.abs() > limit {
+                    return None;
+                }
+                return checked(A::ExtrudeFilament {
+                    nozzle_id: id,
+                    length_mm,
+                    speed_mm_s: None,
+                    target_c: None,
+                });
+            }
+            Self::LoadFilament { supply_id } => {
+                return checked(A::LoadFilament {
+                    supply_id: resolve_supply(supply_id, K::LoadFilament)?,
+                });
+            }
+            Self::UnloadFilament { supply_id } => {
+                let supply_id = resolve_supply(supply_id, K::UnloadFilament)?;
+                if detail.machine.current_supply != Some(supply_id) {
+                    return None;
+                }
+                return checked(A::UnloadFilament { supply_id });
+            }
+            Self::CancelFilamentOperation { supply_id } => {
+                return checked(A::CancelFilamentOperation {
+                    supply_id: resolve_supply(supply_id, K::CancelFilamentOperation)?,
+                });
+            }
+            Self::StartDrying {
+                dryer_id,
+                temperature_c,
+                duration_hours,
+            } => {
+                let dryer = resolve_dryer(dryer_id)?;
+                let cycle = DryingCycle {
+                    temperature_c,
+                    duration_hours,
+                };
+                if !dryer.can_start || !dryer.limits.is_some_and(|limits| limits.contains(cycle)) {
+                    return None;
+                }
+                return checked(A::StartDrying {
+                    dryer_id: dryer.id,
+                    cycle,
+                });
+            }
+            Self::StopDrying { dryer_id } => {
+                let dryer = resolve_dryer(dryer_id)?;
+                return dryer
+                    .can_stop
+                    .then_some(A::StopDrying { dryer_id: dryer.id });
+            }
             _ => return None,
         };
         detail

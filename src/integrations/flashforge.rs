@@ -1707,6 +1707,8 @@ async fn run_detail_handler(
                     let state = state_receiver.borrow();
                     if command.remote.is_some() && !command.permits(&state, false) {
                         Err(ControlError::InvalidState)
+                    } else if command.remote.is_some() && matches!(command.action, MachineAction::MoveAxisRelative { .. }) {
+                        Err(ControlError::Unsupported)
                     } else if command.submitted_at.elapsed() > Duration::from_secs(5)
                         || command.job_target.as_ref().is_some_and(|job| !state.matches_machine_job_target(job)) {
                         Err(ControlError::StaleResource)

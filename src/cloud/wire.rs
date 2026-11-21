@@ -165,6 +165,10 @@ pub(super) enum CommandAction {
     ResumePrint,
     CancelPrint,
     ToggleLight,
+    SetTemperatureTarget {
+        heater: crate::shared::workspace::HeaterKind,
+        target_c: u16,
+    },
     #[serde(other)]
     Unknown,
 }

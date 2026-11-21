@@ -524,6 +524,7 @@ pub(super) async fn run_session(
                                 Command::ResumePrint => dispatch_command(&registry, &printer_id, CommandAction::ResumePrint, None, &remote_session),
                                 Command::CancelPrint => dispatch_command(&registry, &printer_id, CommandAction::CancelPrint, None, &remote_session),
                                 Command::ToggleLight { role } => dispatch_command(&registry, &printer_id, CommandAction::ToggleLight, Some(&role), &remote_session),
+                                Command::SetTemperatureTarget { heater, target_c } => dispatch_command(&registry, &printer_id, CommandAction::SetTemperatureTarget { heater, target_c }, None, &remote_session),
                                 Command::Unknown => {}
                                 command => dispatch_machine_command(&registry, &printer_id, command, &remote_session, &mut remote_replies),
                             }
@@ -684,6 +685,23 @@ pub(super) fn dispatch_command(
         }
         (CommandAction::CancelPrint, None, PrintStatus::Printing | PrintStatus::Paused) => {
             PrinterAction::CancelPrint(context)
+        }
+        (CommandAction::SetTemperatureTarget { heater, target_c }, None, status)
+            if !matches!(status, PrintStatus::Printing | PrintStatus::Paused)
+                && target_c <= heater.max_target_c()
+                && printer
+                    .detail
+                    .state
+                    .borrow()
+                    .temperature_targets
+                    .contains(&heater) =>
+        {
+            PrinterAction::SetTemperatureTarget {
+                heater,
+                target_c,
+                connection_epoch: context.connection_epoch,
+                submitted_at: context.submitted_at,
+            }
         }
         (CommandAction::ToggleLight, Some(role), _) => {
             let Some(enabled) = state

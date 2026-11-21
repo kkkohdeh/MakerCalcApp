@@ -1,12 +1,12 @@
 //! Local machine-control intentions. No provider command strings cross this boundary.
 use std::time::Instant;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 
 use super::workspace::ResourceId;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Axis {
     X,
@@ -14,7 +14,7 @@ pub(crate) enum Axis {
     Z,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum CalibrationKind {
     BedLeveling,
@@ -437,23 +437,58 @@ impl RemoteSession {
     ) -> bool {
         use MachineAction as A;
 
-        self.permits_intent(
-            state,
-            matches!(action, A::SetAutoShutdown { enabled: true, .. }),
-        ) && matches!(
-            action,
-            A::SetLightBrightness { .. }
-                | A::SetFanPower { .. }
-                | A::SetFanEnabled { .. }
-                | A::SetPrintSpeedOverride { .. }
-                | A::SetFlowOverride { .. }
-                | A::SetZOffset { .. }
-                | A::SetAutoShutdown { .. }
-                | A::SetPrintQueuePaused { paused: true }
-                | A::RemoveQueuedPrint { .. }
-                | A::ExcludePrintObject { .. }
-                | A::AcknowledgePrinterAlert { .. }
-                | A::SetDeviceName { .. }
+        self.permits_intent(state, action.is_physical())
+            && matches!(
+                action,
+                A::SetLightBrightness { .. }
+                    | A::SetFanPower { .. }
+                    | A::SetFanEnabled { .. }
+                    | A::SetPrintSpeedOverride { .. }
+                    | A::SetFlowOverride { .. }
+                    | A::SetZOffset { .. }
+                    | A::SetAutoShutdown { .. }
+                    | A::SetPrintQueuePaused { .. }
+                    | A::RemoveQueuedPrint { .. }
+                    | A::ExcludePrintObject { .. }
+                    | A::AcknowledgePrinterAlert { .. }
+                    | A::SetDeviceName { .. }
+                    | A::HomeAxes { .. }
+                    | A::MoveAxisRelative {
+                        speed_mm_s: None,
+                        ..
+                    }
+                    | A::DisableMotors
+                    | A::ExtrudeFilament {
+                        speed_mm_s: None,
+                        target_c: None,
+                        ..
+                    }
+                    | A::RunCalibration { .. }
+                    | A::ConfirmBuildPlateCleared
+                    | A::LoadFilament { .. }
+                    | A::UnloadFilament { .. }
+                    | A::CancelFilamentOperation { .. }
+                    | A::StartDrying { .. }
+                    | A::StopDrying { .. }
+            )
+    }
+}
+
+impl MachineAction {
+    pub(crate) fn is_physical(&self) -> bool {
+        matches!(
+            self,
+            Self::HomeAxes { .. }
+                | Self::MoveAxisRelative { .. }
+                | Self::DisableMotors
+                | Self::ExtrudeFilament { .. }
+                | Self::RunCalibration { .. }
+                | Self::ConfirmBuildPlateCleared
+                | Self::LoadFilament { .. }
+                | Self::UnloadFilament { .. }
+                | Self::StartDrying { .. }
+                | Self::SetPrintQueuePaused { paused: false }
+                | Self::SetAutoShutdown { enabled: true, .. }
         )
     }
 }
