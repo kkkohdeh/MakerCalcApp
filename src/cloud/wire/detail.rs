@@ -25,6 +25,7 @@ pub(in crate::cloud) struct WireDetail {
     device: Fields,
     pub(super) technical: Option<Value>,
     permission: physical::Permission,
+    tracks_protective_controls: bool,
     supply_deadline: Option<Instant>,
 }
 

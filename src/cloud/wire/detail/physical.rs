@@ -17,15 +17,17 @@ pub(super) struct Permission {
 }
 
 impl Permission {
-    fn current(state: &PrinterState, busy: bool, now: Instant) -> Self {
-        let reachable = state.controls.remote
+    fn current(state: &PrinterState, tracks_protective: bool, busy: bool, now: Instant) -> Self {
+        let opted_in = state.permits_remote_physical();
+        let reachable = (opted_in || tracks_protective)
+            && state.controls.remote
             && state.telemetry_ready
             && state.connection == LanConnection::Connected
             && state.age_ms(now).is_some_and(|age| age <= 15_000);
         Self {
             reachable,
-            physical: reachable && state.permits_remote_physical(),
-            busy: reachable && busy,
+            physical: reachable && opted_in,
+            busy: reachable && opted_in && busy,
         }
     }
 }
@@ -37,7 +39,7 @@ impl WireDetail {
         busy: bool,
         now: Instant,
     ) -> bool {
-        self.permission == Permission::current(state, busy, now)
+        self.permission == Permission::current(state, self.tracks_protective_controls, busy, now)
             && self.supply_deadline.is_none_or(|deadline| now < deadline)
     }
 
@@ -48,9 +50,22 @@ impl WireDetail {
         busy: bool,
         now: Instant,
     ) -> Self {
-        let permission = Permission::current(state, busy, now);
-        self.permission = permission;
         let machine = &detail.machine;
+        self.tracks_protective_controls = !detail.temperature_targets.is_empty()
+            || machine
+                .actions
+                .iter()
+                .any(|action| matches!(action, A::CancelFilamentOperation | A::StopDrying))
+            || machine.supplies.iter().any(|supply| {
+                supply
+                    .controls
+                    .iter()
+                    .flatten()
+                    .any(|control| control.action == A::CancelFilamentOperation)
+            })
+            || machine.dryers.iter().any(|dryer| dryer.can_stop);
+        let permission = Permission::current(state, self.tracks_protective_controls, busy, now);
+        self.permission = permission;
         let status = state.telemetry.print_state;
         let idle = matches!(
             status,
