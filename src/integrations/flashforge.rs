@@ -1214,17 +1214,116 @@ async fn fetch_tcp_gcode_list(host: &str) -> Option<Vec<String>> {
     if files.is_empty() { None } else { Some(files) }
 }
 
+#[derive(Default)]
+struct ControlStops {
+    printer: std::collections::VecDeque<PrinterAction>,
+    machine: std::collections::VecDeque<crate::shared::control::MachineCommand>,
+}
+
+impl ControlStops {
+    async fn wait<T>(
+        &mut self,
+        io: &mut OperationIo,
+        state: &watch::Receiver<PrinterState>,
+        shutdown: &mut watch::Receiver<bool>,
+        response: impl std::future::Future<Output = T>,
+        unknown: T,
+    ) -> T {
+        use crate::shared::control::{ControlError, ControlResult};
+        tokio::pin!(response);
+        loop {
+            tokio::select! {
+                biased;
+                _ = shutdown.changed() => return unknown,
+                result = &mut response => return result,
+                Some(action) = io.actions.recv() => {
+                    if let PrinterAction::Remote { action: inner, permit } = &action
+                        && {
+                            let state = state.borrow();
+                            permit.permits_printer(inner, &state)
+                                && match inner.as_ref() {
+                                    PrinterAction::PausePrint(context)
+                                    | PrinterAction::CancelPrint(context) => state.permits_print_control(inner.kind(), context),
+                                    PrinterAction::SetTemperatureTarget { target_c: 0, connection_epoch, submitted_at, .. } => {
+                                        *connection_epoch == state.connection_epoch
+                                            && submitted_at.elapsed() <= Duration::from_secs(5)
+                                            && fresh_connected_telemetry(&state)
+                                            && !matches!(state.telemetry.print_state, PrintStatus::Printing | PrintStatus::Paused)
+                                    }
+                                    _ => false,
+                                }
+                        }
+                    {
+                        let before = self.printer.iter().position(|queued| !queued.is_remote_stop())
+                            .unwrap_or(self.printer.len());
+                        let limit = io.actions.max_capacity();
+                        if self.printer.len() == limit && before < limit {
+                            self.printer.pop_back();
+                        }
+                        if self.printer.len() < limit {
+                            self.printer.insert(before, action);
+                            // Stopping the wait leaves the outcome of the sent request unknown.
+                            return unknown;
+                        }
+                    } else if !action.is_remote_stop() && self.printer.len() < io.actions.max_capacity()
+                    {
+                        self.printer.push_back(action);
+                    }
+                }
+                Some(command) = io.machine_actions.recv() => {
+                    if command.action.is_stop() && command.remote.is_some()
+                        && !command.reply.is_closed()
+                        && {
+                            let state = state.borrow();
+                            command.connection_epoch == state.connection_epoch
+                                && command.permits(&state, false)
+                                && command.job_target.as_ref().is_none_or(|target| state.matches_machine_job_target(target))
+                        }
+                        && command.submitted_at.elapsed() <= Duration::from_secs(5)
+                        && self.machine.len() < io.machine_actions.max_capacity()
+                    {
+                        self.machine.push_back(command);
+                        return unknown;
+                    }
+                    let _ = command.reply.send(ControlResult::Rejected(ControlError::Busy));
+                }
+            }
+        }
+    }
+
+    async fn send_printer_request(
+        &mut self,
+        io: &mut OperationIo,
+        state: &watch::Receiver<PrinterState>,
+        shutdown: &mut watch::Receiver<bool>,
+        request: reqwest::RequestBuilder,
+        kind: PrinterActionKind,
+    ) {
+        io.state.send_replace(OperationState::Sending(kind));
+        let result = self
+            .wait(
+                io,
+                state,
+                shutdown,
+                flashforge_operation_result(request, kind),
+                OperationState::Unknown(kind),
+            )
+            .await;
+        io.state.send_replace(result);
+    }
+}
+
 fn drain_queued_operations(
     operation_io: &mut OperationIo,
-    printer_stops: &mut std::collections::VecDeque<PrinterAction>,
-    machine_stops: &mut std::collections::VecDeque<crate::shared::control::MachineCommand>,
+    stops: &mut ControlStops,
+    reject_printer_actions: bool,
 ) {
     for _ in 0..operation_io.machine_actions.max_capacity() {
         let Ok(queued) = operation_io.machine_actions.try_recv() else {
             break;
         };
-        if queued.remote.is_some() && queued.action.is_stop() && machine_stops.len() < 2 {
-            machine_stops.push_back(queued);
+        if queued.remote.is_some() && queued.action.is_stop() && stops.machine.len() < 2 {
+            stops.machine.push_back(queued);
             continue;
         }
         let _ = queued
@@ -1233,16 +1332,19 @@ fn drain_queued_operations(
                 crate::shared::control::ControlError::Busy,
             ));
     }
+    if !reject_printer_actions {
+        return;
+    }
     let machine_sending = matches!(
         *operation_io.state.borrow(),
         OperationState::Sending(PrinterActionKind::MachineControl)
     );
-    for _ in 0..operation_io.actions.max_capacity() {
-        let Ok(queued) = operation_io.actions.try_recv() else {
-            break;
-        };
-        if queued.is_remote_stop() && printer_stops.len() < 4 {
-            printer_stops.push_back(queued);
+    let queued_printer_actions = std::mem::take(&mut stops.printer);
+    let waiting = (0..operation_io.actions.max_capacity())
+        .map_while(|_| operation_io.actions.try_recv().ok());
+    for queued in queued_printer_actions.into_iter().chain(waiting) {
+        if queued.is_remote_stop() && stops.printer.len() < 4 {
+            stops.printer.push_back(queued);
             continue;
         }
         if !machine_sending {
@@ -1404,8 +1506,7 @@ async fn run_detail_handler(
     let mut machine = machine::Projection::default();
     let mut last_operation_finished = None;
     let mut pending_motion = false;
-    let mut printer_stops = std::collections::VecDeque::new();
-    let mut machine_stops = std::collections::VecDeque::new();
+    let mut stops = ControlStops::default();
     let mut pending_extrusion: Option<crate::shared::control::ExtrusionWait> = None;
     let gcode_list_url = format!("http://{host}:{port}/gcodeList");
     let gcode_list_body = json!({
@@ -1415,6 +1516,9 @@ async fn run_detail_handler(
     .to_string();
 
     loop {
+        if *shutdown.borrow() {
+            break;
+        }
         if let Some(mut waiting) = pending_extrusion.take() {
             use crate::shared::control::{ControlError, ControlResult, MachineAction};
             let ready = machine
@@ -1427,7 +1531,7 @@ async fn run_detail_handler(
                 Ok(false) => pending_extrusion = Some(waiting),
                 Ok(true)
                     if history_receiver.has_changed().unwrap_or(true)
-                        || !printer_stops.is_empty()
+                        || !stops.printer.is_empty()
                         || !operation_io.actions.is_empty() =>
                 {
                     pending_extrusion = Some(waiting);
@@ -1469,11 +1573,23 @@ async fn run_detail_handler(
                         );
                         match payload {
                             Err(error) => ControlResult::Rejected(error),
-                            Ok(payload) => tokio::select! {
-                                biased;
-                                _ = shutdown.changed() => ControlResult::Unknown,
-                                result = machine::dispatch(&client, &control_url, &serial_number, &check_code, payload) => result,
-                            },
+                            Ok(payload) => {
+                                stops
+                                    .wait(
+                                        &mut operation_io,
+                                        &state_receiver,
+                                        &mut shutdown,
+                                        machine::dispatch(
+                                            &client,
+                                            &control_url,
+                                            &serial_number,
+                                            &check_code,
+                                            payload,
+                                        ),
+                                        ControlResult::Unknown,
+                                    )
+                                    .await
+                            }
                         }
                     };
                     last_operation_finished = Some(Instant::now());
@@ -1483,11 +1599,7 @@ async fn run_detail_handler(
                         operation_io.state.send_replace(OperationState::Idle);
                     }
                     let _ = command.reply.send(result);
-                    drain_queued_operations(
-                        &mut operation_io,
-                        &mut printer_stops,
-                        &mut machine_stops,
-                    );
+                    drain_queued_operations(&mut operation_io, &mut stops, true);
                 }
             }
         }
@@ -1568,19 +1680,18 @@ async fn run_detail_handler(
                         pending_motion = false;
                         operation_io.state.send_replace(OperationState::Idle);
                     }
-                    let next = if machine_stops.is_empty() && operation_io.machine_actions.is_empty()
-                        && printer_stops.is_empty() && operation_io.actions.is_empty() {
+                    let next = if stops.machine.is_empty() && operation_io.machine_actions.is_empty()
+                        && stops.printer.is_empty() && operation_io.actions.is_empty() {
                         machine.next_load(&state_receiver.borrow(), &mut current_state)
                     } else {
                         None
                     };
                     if let Some((payload, reply)) = next {
                         let url = format!("http://{host}:{port}/control");
-                        let result = tokio::select! {
-                            biased;
-                            _ = shutdown.changed() => crate::shared::control::ControlResult::Unknown,
-                            result = machine::dispatch(&client, &url, &serial_number, &check_code, payload) => result,
-                        };
+                        let result = stops.wait(&mut operation_io, &state_receiver, &mut shutdown,
+                            machine::dispatch(&client, &url, &serial_number, &check_code, payload),
+                            crate::shared::control::ControlResult::Unknown,
+                        ).await;
                         last_operation_finished = Some(Instant::now());
                         if matches!(
                             result,
@@ -1594,7 +1705,7 @@ async fn run_detail_handler(
                         }
                         machine.refresh_supply_controls(&mut current_state);
                         let _ = reply.send(result);
-                        drain_queued_operations(&mut operation_io, &mut printer_stops, &mut machine_stops);
+                        drain_queued_operations(&mut operation_io, &mut stops, true);
                     }
                     current_state.revision = current_state.revision.saturating_add(1);
                     let _ = detail_io.state.send_replace(Arc::new(current_state.clone()));
@@ -1739,7 +1850,7 @@ async fn run_detail_handler(
             }
 
             Some(command) = async {
-                match machine_stops.pop_front() {
+                match stops.machine.pop_front() {
                     Some(stop) => Some(stop),
                     None => operation_io.machine_actions.recv().await,
                 }
@@ -1757,7 +1868,7 @@ async fn run_detail_handler(
                         || command.job_target.as_ref().is_some_and(|job| !state.matches_machine_job_target(job)) {
                         Err(ControlError::StaleResource)
                     } else if !priority && (last_operation_finished.is_some_and(|at| command.submitted_at <= at)
-                        || operation_io.state.borrow().is_pending() || !operation_io.actions.is_empty()) {
+                        || operation_io.state.borrow().is_pending() || !operation_io.actions.is_empty() || !stops.printer.is_empty()) {
                         Err(ControlError::Busy)
                     } else if matches!(command.action, MachineAction::DisableMotors
                         | MachineAction::ExtrudeFilament { speed_mm_s: Some(_), target_c: None, .. }) {
@@ -1779,11 +1890,10 @@ async fn run_detail_handler(
                     Ok(payload) => {
                         let url = format!("http://{host}:{port}/control");
                         let result = match payload {
-                            Some(payload) => tokio::select! {
-                                biased;
-                                _ = shutdown.changed() => ControlResult::Unknown,
-                                result = machine::dispatch(&client, &url, &serial_number, &check_code, payload) => result,
-                            },
+                            Some(payload) => stops.wait(&mut operation_io, &state_receiver, &mut shutdown,
+                                machine::dispatch(&client, &url, &serial_number, &check_code, payload),
+                                ControlResult::Unknown,
+                            ).await,
                             // Finish bounded TCP cleanup even when the view or app closes.
                             None => dispatch_manual_tcp(&host, &command, None, &machine, &current_state, &state_receiver, &history_receiver, &detail_io.active, &shutdown).await,
                         };
@@ -1805,7 +1915,7 @@ async fn run_detail_handler(
                             current_state.revision = current_state.revision.saturating_add(1);
                             detail_io.state.send_replace(Arc::new(current_state.clone()));
                         }
-                        drain_queued_operations(&mut operation_io, &mut printer_stops, &mut machine_stops);
+                        drain_queued_operations(&mut operation_io, &mut stops, true);
                         result
                     }
                 };
@@ -1845,7 +1955,7 @@ async fn run_detail_handler(
             } => {}
 
             action_opt = async {
-                match printer_stops.pop_front() {
+                match stops.printer.pop_front() {
                     Some(stop) => Some(stop),
                     None => operation_io.actions.recv().await,
                 }
@@ -1942,59 +2052,25 @@ async fn run_detail_handler(
                                 continue;
                             }
                         };
-                        let _ = operation_io
-                            .state
-                            .send_replace(OperationState::Sending(PrinterActionKind::StartPrint));
                         let print_url = format!("http://{host}:{port}/printGcode");
                         let request = client
                             .post(&print_url)
                             .header("Content-Type", "application/json")
                             .body(print_body)
                             .timeout(Duration::from_secs(10));
-                        let result = flashforge_operation_result(request, PrinterActionKind::StartPrint).await;
-                        let _ = operation_io.state.send_replace(result);
+                        stops.send_printer_request(&mut operation_io, &state_receiver, &mut shutdown, request, PrinterActionKind::StartPrint).await;
                     }
 
-                    PrinterAction::PausePrint(..) => {
-                        send_flashforge_job_control(
-                            &client,
-                            &host,
-                            port,
-                            &serial_number,
-                            &check_code,
-                            "pause",
-                            PrinterActionKind::PausePrint,
-                            &operation_io,
-                        )
-                        .await;
-                    }
-
-                    PrinterAction::ResumePrint(..) => {
-                        send_flashforge_job_control(
-                            &client,
-                            &host,
-                            port,
-                            &serial_number,
-                            &check_code,
-                            "continue",
-                            PrinterActionKind::ResumePrint,
-                            &operation_io,
-                        )
-                        .await;
-                    }
-
-                    PrinterAction::CancelPrint(..) => {
-                        send_flashforge_job_control(
-                            &client,
-                            &host,
-                            port,
-                            &serial_number,
-                            &check_code,
-                            "cancel",
-                            PrinterActionKind::CancelPrint,
-                            &operation_io,
-                        )
-                        .await;
+                    PrinterAction::PausePrint(..) | PrinterAction::ResumePrint(..) | PrinterAction::CancelPrint(..) => {
+                        let kind = action.kind();
+                        let command = match action {
+                            PrinterAction::PausePrint(..) => "pause",
+                            PrinterAction::ResumePrint(..) => "continue",
+                            _ => "cancel",
+                        };
+                        let body = build_job_control_payload(&serial_number, &check_code, command);
+                        let request = flashforge_control_request(&client, &host, port, body);
+                        stops.send_printer_request(&mut operation_io, &state_receiver, &mut shutdown, request, kind).await;
                     }
 
                     PrinterAction::SetTemperatureTarget { heater, target_c, connection_epoch, submitted_at } => {
@@ -2031,15 +2107,8 @@ async fn run_detail_handler(
                             heater,
                             target_c,
                         );
-                        send_flashforge_control(
-                            &client,
-                            &host,
-                            port,
-                            body,
-                            kind,
-                            &operation_io,
-                        )
-                        .await;
+                        let request = flashforge_control_request(&client, &host, port, body);
+                        stops.send_printer_request(&mut operation_io, &state_receiver, &mut shutdown, request, kind).await;
                     }
 
                     PrinterAction::ToggleLight { role, .. } => {
@@ -2082,15 +2151,8 @@ async fn run_detail_handler(
                             &check_code,
                             !enabled,
                         );
-                        send_flashforge_control(
-                            &client,
-                            &host,
-                            port,
-                            body,
-                            kind,
-                            &operation_io,
-                        )
-                        .await;
+                        let request = flashforge_control_request(&client, &host, port, body);
+                        stops.send_printer_request(&mut operation_io, &state_receiver, &mut shutdown, request, kind).await;
                     }
 
                     PrinterAction::UploadGcode { source, destination } => {
@@ -2126,26 +2188,18 @@ async fn run_detail_handler(
                     }
                 }
                 last_operation_finished = Some(Instant::now());
-                while let Ok(queued) = operation_io.machine_actions.try_recv() {
-                    let _ = queued.reply.send(crate::shared::control::ControlResult::Rejected(crate::shared::control::ControlError::Busy));
-                }
+                drain_queued_operations(&mut operation_io, &mut stops, false);
             }
         }
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn send_flashforge_job_control(
-    client: &reqwest::Client,
-    host: &str,
-    port: u16,
+fn build_job_control_payload(
     serial_number: &str,
     check_code: &str,
     action: &str,
-    kind: PrinterActionKind,
-    operation_io: &OperationIo,
-) {
-    let ctl_body = json!({
+) -> serde_json::Value {
+    json!({
         "serialNumber": serial_number,
         "checkCode": check_code,
         "payload": {
@@ -2154,9 +2208,7 @@ async fn send_flashforge_job_control(
                 "action": action,
             }
         }
-    });
-
-    send_flashforge_control(client, host, port, ctl_body, kind, operation_io).await;
+    })
 }
 
 fn build_temperature_control_payload(
@@ -2202,27 +2254,19 @@ fn build_light_control_payload(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn send_flashforge_control(
+fn flashforge_control_request(
     client: &reqwest::Client,
     host: &str,
     port: u16,
     ctl_body: serde_json::Value,
-    kind: PrinterActionKind,
-    operation_io: &OperationIo,
-) {
-    let _ = operation_io
-        .state
-        .send_replace(OperationState::Sending(kind));
+) -> reqwest::RequestBuilder {
     let ctl_url = format!("http://{host}:{port}/control");
 
-    let request = client
+    client
         .post(&ctl_url)
         .header("Content-Type", "application/json")
         .body(ctl_body.to_string())
-        .timeout(Duration::from_secs(10));
-    let result = flashforge_operation_result(request, kind).await;
-    let _ = operation_io.state.send_replace(result);
+        .timeout(Duration::from_secs(10))
 }
 
 /// Upload a G-code file using `POST /uploadGcode` multipart HTTP.
