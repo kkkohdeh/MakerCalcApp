@@ -545,6 +545,19 @@ pub(crate) enum PrinterAction {
     },
 }
 impl PrinterAction {
+    pub(crate) fn remote_permission(&self) -> Option<super::control::RemotePermission> {
+        use super::control::RemotePermission::{Physical, Standard};
+        match self {
+            Self::ResumePrint(_) => Some(Physical),
+            Self::SetTemperatureTarget { target_c: 0, .. }
+            | Self::PausePrint(_)
+            | Self::CancelPrint(_)
+            | Self::ToggleLight { .. } => Some(Standard),
+            Self::SetTemperatureTarget { .. } => Some(Physical),
+            _ => None,
+        }
+    }
+
     pub(crate) fn is_stop(&self) -> bool {
         matches!(
             self,
@@ -561,12 +574,20 @@ impl PrinterAction {
     pub(crate) fn into_permitted(
         self,
         state: &crate::state::PrinterState,
-    ) -> Option<(Self, Option<super::control::RemoteSession>)> {
+    ) -> Option<(
+        Self,
+        Option<(
+            super::control::RemoteSession,
+            super::control::RemotePermission,
+        )>,
+    )> {
         match self {
-            Self::Remote { action, permit } if permit.permits_printer(&action, state) => {
-                Some((*action, Some(permit)))
+            Self::Remote { action, permit } => {
+                let permission = action.remote_permission()?;
+                permit
+                    .permits_intent(state, permission)
+                    .then_some((*action, Some((permit, permission))))
             }
-            Self::Remote { .. } => None,
             action => Some((action, None)),
         }
     }

@@ -1148,17 +1148,12 @@ async fn send_printer_action(
 ) -> Result<(), MoonrakerError> {
     let priority = action.is_remote_stop();
     let (action, remote) = match action {
-        PrinterAction::Remote { action, permit } => {
-            let physical = match *action {
-                PrinterAction::ResumePrint(_) => true,
-                PrinterAction::SetTemperatureTarget { target_c, .. } => target_c > 0,
-                PrinterAction::PausePrint(_)
-                | PrinterAction::CancelPrint(_)
-                | PrinterAction::SetLightOutput { .. }
-                | PrinterAction::RunLightMacro { .. } => false,
-                _ => return Ok(()),
-            };
-            if !permit.permits_intent(state, physical) {
+        PrinterAction::Remote {
+            action,
+            permit,
+            permission,
+        } => {
+            if !permit.permits_intent(state, permission) {
                 return Ok(());
             }
             (*action, true)

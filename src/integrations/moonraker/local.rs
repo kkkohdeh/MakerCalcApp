@@ -38,6 +38,7 @@ pub(crate) enum PrinterAction {
     Remote {
         action: Box<Self>,
         permit: crate::shared::control::RemoteSession,
+        permission: crate::shared::control::RemotePermission,
     },
     MachineControl {
         control: Box<super::adapter::control::PreparedControl>,

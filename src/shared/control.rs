@@ -397,6 +397,12 @@ pub(crate) struct MachineCommand {
 #[derive(Clone, Debug)]
 pub(crate) struct RemoteSession(pub(crate) std::sync::Weak<()>);
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum RemotePermission {
+    Standard,
+    Physical,
+}
+
 impl PartialEq for RemoteSession {
     fn eq(&self, other: &Self) -> bool {
         self.0.ptr_eq(&other.0)
@@ -407,11 +413,11 @@ impl RemoteSession {
     pub(crate) fn permits_intent(
         &self,
         state: &crate::state::PrinterState,
-        physical: bool,
+        permission: RemotePermission,
     ) -> bool {
         self.0.strong_count() != 0
             && state.controls.remote
-            && (!physical || state.permits_remote_physical())
+            && (matches!(permission, RemotePermission::Standard) || state.permits_remote_physical())
     }
 
     pub(crate) fn permits_printer(
@@ -419,15 +425,9 @@ impl RemoteSession {
         action: &super::workspace::PrinterAction,
         state: &crate::state::PrinterState,
     ) -> bool {
-        use super::workspace::PrinterAction as A;
-        match action {
-            A::ResumePrint(_) => self.permits_intent(state, true),
-            A::SetTemperatureTarget { target_c, .. } => self.permits_intent(state, *target_c > 0),
-            A::PausePrint(_) | A::CancelPrint(_) | A::ToggleLight { .. } => {
-                self.permits_intent(state, false)
-            }
-            _ => false,
-        }
+        action
+            .remote_permission()
+            .is_some_and(|permission| self.permits_intent(state, permission))
     }
 
     pub(crate) fn permits(
@@ -437,7 +437,12 @@ impl RemoteSession {
     ) -> bool {
         use MachineAction as A;
 
-        self.permits_intent(state, action.is_physical())
+        let permission = if action.is_physical() {
+            RemotePermission::Physical
+        } else {
+            RemotePermission::Standard
+        };
+        self.permits_intent(state, permission)
             && matches!(
                 action,
                 A::SetLightBrightness { .. }

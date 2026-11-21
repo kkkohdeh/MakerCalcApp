@@ -940,9 +940,10 @@ impl Projection {
             },
         };
         Ok(match remote {
-            Some(permit) => local::PrinterAction::Remote {
+            Some((permit, permission)) => local::PrinterAction::Remote {
                 action: Box::new(action),
                 permit,
+                permission,
             },
             None => action,
         })
