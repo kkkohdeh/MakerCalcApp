@@ -558,22 +558,28 @@ pub(super) async fn run_session(
     }
 }
 
-type RemoteReplies = Vec<(
-    crate::state::LocalPrinterId,
-    bool,
-    tokio::sync::oneshot::Receiver<crate::shared::control::ControlResult>,
-)>;
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RemotePriority {
+    Normal,
+    Stop,
+}
+
+struct PendingRemoteReply {
+    printer_id: crate::state::LocalPrinterId,
+    priority: RemotePriority,
+    completion: tokio::sync::oneshot::Receiver<crate::shared::control::ControlResult>,
+}
 
 fn dispatch_machine_command(
     registry: &CloudRegistry,
     printer_id: &str,
     command: Command,
     session: &std::sync::Arc<()>,
-    replies: &mut RemoteReplies,
+    replies: &mut Vec<PendingRemoteReply>,
 ) {
-    replies.retain_mut(|(_, _, reply)| {
+    replies.retain_mut(|reply| {
         matches!(
-            reply.try_recv(),
+            reply.completion.try_recv(),
             Err(tokio::sync::oneshot::error::TryRecvError::Empty)
         )
     });
@@ -599,22 +605,31 @@ fn dispatch_machine_command(
     let Some(action) = command.resolve(&detail, &state) else {
         return;
     };
-    let priority = action.is_stop();
+    let priority = if action.is_stop() {
+        RemotePriority::Stop
+    } else {
+        RemotePriority::Normal
+    };
     if replies
         .iter()
-        .filter(|(_, stop, _)| *stop == priority)
+        .filter(|reply| reply.priority == priority)
         .count()
         >= 32
-        || (!priority && replies.iter().any(|(id, _, _)| *id == printer.id))
+        || (priority == RemotePriority::Normal
+            && replies.iter().any(|reply| reply.printer_id == printer.id))
     {
         return;
     }
     let permit = crate::shared::control::RemoteSession(std::sync::Arc::downgrade(session));
-    if let Ok(reply) = printer
+    if let Ok(completion) = printer
         .operation
         .remote_machine_action(&state, action, permit)
     {
-        replies.push((printer.id, priority, reply));
+        replies.push(PendingRemoteReply {
+            printer_id: printer.id,
+            priority,
+            completion,
+        });
     }
 }
 
