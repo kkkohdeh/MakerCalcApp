@@ -5,6 +5,8 @@ pub(super) struct PendingLoad {
     source: ResourceId,
     target: ResourceId,
     epoch: u64,
+    job_target: Option<crate::state::MachineJobTarget>,
+    unload_heating_generation: Option<u64>,
     started: Instant,
     saw_unloading: bool,
     saw_nonterminal_step: bool,
@@ -28,20 +30,20 @@ impl Projection {
         &mut self,
         source: ResourceId,
         target: ResourceId,
-        epoch: u64,
+        command: crate::shared::control::MachineCommand,
         started: Instant,
-        remote: Option<crate::shared::control::RemoteSession>,
-        reply: oneshot::Sender<ControlResult>,
     ) {
         self.pending_load = Some(PendingLoad {
             source,
             target,
-            epoch,
+            epoch: command.connection_epoch,
+            job_target: command.job_target,
+            unload_heating_generation: None,
             started,
             saw_unloading: false,
             saw_nonterminal_step: matches!(self.station_step, Some(0 | 4 | 5)),
-            remote,
-            reply,
+            remote: command.remote,
+            reply: command.reply,
         });
     }
 
@@ -120,6 +122,30 @@ impl Projection {
             return None;
         }
         let operation = source.and_then(|s| s.operation);
+        if let Some(crate::state::MachineJobTarget::Inactive(generation)) = load.job_target.as_ref()
+            && load.unload_heating_generation.is_none()
+            && generation.checked_add(1) == Some(state.job_generation)
+            && status_matches(self.status.as_deref(), &["heating"])
+            && operation.is_some_and(|op| {
+                op.action == K::UnloadFilament && op.phase == SupplyOperationPhase::Running
+            })
+            && state
+                .telemetry
+                .current_job
+                .as_ref()
+                .is_some_and(|job| job.print_name.is_none())
+        {
+            // FlashForge reports anonymous unload heating as printing.
+            load.unload_heating_generation = Some(state.job_generation);
+        }
+        if load.job_target.as_ref().is_some_and(|target| {
+            !state.matches_machine_job_target(target)
+                && load.unload_heating_generation != Some(state.job_generation)
+        }) {
+            let _ = load.reply.send(ControlResult::Unknown);
+            self.refresh_supply_controls(detail);
+            return None;
+        }
         if let Some(operation) = operation {
             if operation.action != K::UnloadFilament
                 || operation.phase == SupplyOperationPhase::Cancelling

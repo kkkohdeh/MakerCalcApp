@@ -1929,7 +1929,7 @@ async fn run_detail_handler(
                     continue;
                 }
                 if let (Some(source), crate::shared::control::MachineAction::LoadFilament { supply_id }, ControlResult::Accepted) = (source, &command.action, result) {
-                    machine.defer_load(source, *supply_id, command.connection_epoch, dispatch_started, command.remote, command.reply);
+                    machine.defer_load(source, *supply_id, command, dispatch_started);
                 } else {
                     let _ = command.reply.send(result);
                 }
