@@ -1189,7 +1189,7 @@ async fn send_printer_action(
         return Ok(());
     }
     let request = runtime_control_request(*next_id, &action, detail, state).and_then(|request| {
-        if remote {
+        if remote && matches!(action, PrinterAction::SetTemperatureTarget { .. }) {
             validate_remote_script(&request, detail)?;
         }
         Ok(request)

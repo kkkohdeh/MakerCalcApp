@@ -1425,7 +1425,11 @@ async fn run_detail_handler(
                 });
             match ready {
                 Ok(false) => pending_extrusion = Some(waiting),
-                Ok(true) if history_receiver.has_changed().unwrap_or(true) => {
+                Ok(true)
+                    if history_receiver.has_changed().unwrap_or(true)
+                        || !printer_stops.is_empty()
+                        || !operation_io.actions.is_empty() =>
+                {
                     pending_extrusion = Some(waiting);
                 }
                 Err(error) => {
@@ -1564,7 +1568,8 @@ async fn run_detail_handler(
                         pending_motion = false;
                         operation_io.state.send_replace(OperationState::Idle);
                     }
-                    let next = if machine_stops.is_empty() && operation_io.machine_actions.is_empty() {
+                    let next = if machine_stops.is_empty() && operation_io.machine_actions.is_empty()
+                        && printer_stops.is_empty() && operation_io.actions.is_empty() {
                         machine.next_load(&state_receiver.borrow(), &mut current_state)
                     } else {
                         None
@@ -2010,6 +2015,15 @@ async fn run_detail_handler(
                                 message: crate::i18n::t!("printers.temperature.unavailable").into_owned(),
                             });
                             continue;
+                        }
+                        if priority && heater == HeaterKind::Nozzle {
+                            if let Some(waiting) = pending_extrusion.take() {
+                                let _ = waiting.command.reply.send(crate::shared::control::ControlResult::Unknown);
+                            }
+                            machine.abort_load(crate::shared::control::ControlResult::Unknown);
+                            machine.refresh_supply_controls(&mut current_state);
+                            current_state.revision = current_state.revision.saturating_add(1);
+                            detail_io.state.send_replace(Arc::new(current_state.clone()));
                         }
                         let body = build_temperature_control_payload(
                             &serial_number,
