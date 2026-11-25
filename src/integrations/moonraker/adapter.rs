@@ -255,7 +255,9 @@ impl Projection {
         device.enabled = value.get("enabled").and_then(Value::as_bool);
         device.filament_present = value.get("filament_detected").and_then(Value::as_bool);
         device.can_extrude = value.get("can_extrude").and_then(Value::as_bool);
-        device.velocity_mm_s = positive(value, "live_velocity");
+        device.velocity_mm_s = number(value, "live_velocity")
+            .map(super::normalize_live_velocity)
+            .filter(|speed| *speed >= 0.0);
         device.position_mm = value
             .get("live_position")
             .and_then(Value::as_array)

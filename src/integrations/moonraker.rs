@@ -2956,10 +2956,10 @@ fn apply_fields(
         .get("motion_report")
         .and_then(Value::as_object)
         .and_then(|object| object.get("live_velocity"))
-        .map(parse_optional_nonnegative)
+        .map(parse_optional_finite)
         .transpose()?
     {
-        next.velocity_mm_s = velocity;
+        next.velocity_mm_s = velocity.map(normalize_live_velocity);
         recognized = true;
     }
     let nozzle_object = active_extruder.unwrap_or("extruder");
@@ -3248,6 +3248,15 @@ fn parse_optional_finite(value: &Value) -> Result<Option<f64>, MoonrakerError> {
     }
     Ok(Some(value))
 }
+fn normalize_live_velocity(velocity_mm_s: f64) -> f64 {
+    // Klipper's speed interpolation can round slightly below zero.
+    if (-1e-9..0.0).contains(&velocity_mm_s) {
+        0.0
+    } else {
+        velocity_mm_s
+    }
+}
+
 fn parse_optional_nonnegative(value: &Value) -> Result<Option<f64>, MoonrakerError> {
     let value = parse_optional_finite(value)?;
     if value.is_some_and(|value| value < 0.0) {
